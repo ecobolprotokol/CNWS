@@ -12,8 +12,6 @@ pub mod lattice;
 pub mod api;
 pub mod telemetry;
 
-pub mod bin;
-
 // Re-export commonly used types
 pub use error::{CnwsError, Result};
 pub use types::*;

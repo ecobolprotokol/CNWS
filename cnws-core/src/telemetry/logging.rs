@@ -1,7 +1,7 @@
 //! Structured logging for CNWS
 //! Implements JSON logging with trace context
 
-use crate::error::Result;
+use crate::error::{CnwsError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -113,7 +113,8 @@ impl CnwsLogger {
                     .with_ansi(true)
             );
 
-        tracing::subscriber::set_global_default(subscriber)?;
+        tracing::subscriber::set_global_default(subscriber)
+            .map_err(|e| CnwsError::Internal(format!("Failed to set global subscriber: {}", e)))?;
         Ok(())
     }
 
@@ -121,7 +122,8 @@ impl CnwsLogger {
     pub fn init_json() -> Result<()> {
         let layer = JsonLogLayer::new();
         let subscriber = tracing_subscriber::registry().with(layer);
-        tracing::subscriber::set_global_default(subscriber)?;
+        tracing::subscriber::set_global_default(subscriber)
+            .map_err(|e| CnwsError::Internal(format!("Failed to set global subscriber: {}", e)))?;
         Ok(())
     }
 }
@@ -147,13 +149,12 @@ where
         let mut fields = HashMap::new();
         let mut message = String::new();
 
-        event.record(|key, value| {
+        event.record(|key: &str, value: &dyn std::fmt::Debug| {
             if key == "message" {
-                if let Some(s) = value.as_str() {
-                    message = s.to_string();
-                }
+                let str_val = format!("{:?}", value);
+                message = str_val;
             } else {
-                fields.insert(key.to_string(), serde_json::to_value(value).unwrap_or(serde_json::Value::Null));
+                fields.insert(key.to_string(), serde_json::to_value(format!("{:?}", value)).unwrap_or(serde_json::Value::Null));
             }
         });
 

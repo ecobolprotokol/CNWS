@@ -1,7 +1,7 @@
 //! Runtime API - public interface for Cell Graph execution
 
-use super::super::lattice::runtime::{ExecutionEngine, MockResolver, Query, WorkingState};
-use super::super::types::{Blake3Hash, CellType, ComputeBudget};
+use super::super::lattice::runtime::{ExecutionEngine, MockResolver, WorkingState};
+use super::super::types::{Blake3Hash, CellType, ComputeBudget, Query};
 use crate::error::{CnwsError, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

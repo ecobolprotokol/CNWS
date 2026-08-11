@@ -55,7 +55,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 prometheus = { version = "0.13", features = ["process"] }
 opentelemetry = { version = "0.21", features = ["trace"] }
-opentelemetry-jaeger = { version = "0.20" }
+opentelemetry-jaeger = { version = "0.20", optional = true }
 
 # CLI
 clap = { version = "4.4", features = ["derive"] }
@@ -87,7 +87,3 @@ jaeger = ["opentelemetry-jaeger"]
 [[bin]]
 name = "cnws"
 path = "src/bin/main.rs"
-
-[[bench]]
-name = "benchmarks"
-harness = false

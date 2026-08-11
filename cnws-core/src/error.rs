@@ -11,7 +11,7 @@ pub enum CnwsError {
     #[error("Store not found: {0}")]
     StoreNotFound(PathBuf),
 
-    #[error("Corrupt store: {0}")]
+    #[error("Corrupt store")]
     CorruptStore,
 
     #[error("Tile not found: {0}")]

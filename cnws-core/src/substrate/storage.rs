@@ -1,9 +1,8 @@
 //! Storage engine for .cd store format
 //! Implements tile-based immutable storage with content addressing
 
-use super::types::{Blake3Hash, CellType, Compression, DataType, TileLocation, TILE_SIZE};
+use crate::types::{Blake3Hash, CellType, Compression, DataType, TileLocation, TILE_SIZE, SUPERBLOCK_MAGIC, SUPERBLOCK_SIZE};
 use crate::error::{CnwsError, Result};
-use crate::types::{SUPERBLOCK_MAGIC, SUPERBLOCK_SIZE};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -169,19 +168,6 @@ impl SegmentHeader {
         }
         )
     }
-}
-
-/// Tile location in store
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
-pub struct TileLocation {
-    /// Segment index
-    pub segment: u32,
-    /// Offset within segment
-    pub offset: u64,
-    /// Tile size in bytes
-    pub size: u32,
-    /// Compression type
-    pub compression: Compression,
 }
 
 /// Tile registry - maps tile hashes to locations

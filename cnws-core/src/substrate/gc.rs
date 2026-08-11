@@ -4,7 +4,7 @@
 use super::revision::RevisionManager;
 use super::storage::StorageEngine;
 use crate::error::{CnwsError, Result};
-use crate::types::Blake3Hash;
+use crate::types::{Blake3Hash, TILE_SIZE};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

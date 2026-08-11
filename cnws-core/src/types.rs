@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::collections::HashMap;
+use crate::error::{CnwsError, Result};
 
 // ============================================================================
 // BLAKE3-256 Hash (32 bytes)
@@ -387,7 +389,7 @@ pub struct Query {
     /// Entry cell hashes
     pub entry_cells: Vec<Blake3Hash>,
     /// Parameters
-    pub parameters: std::collections::HashMap<String, String>,
+    pub parameters: HashMap<String, String>,
     /// Maximum depth
     pub max_depth: u32,
     /// Maximum compute
@@ -427,3 +429,327 @@ pub const REVISION_MAGIC: &[u8; 8] = b"CNWSREV1";
 
 /// Manifest magic bytes
 pub const MANIFEST_MAGIC: &[u8; 8] = b"CNWSMAN1";
+
+// ============================================================================
+// Cell - Universal Unit (from Cell Schema Spec §4.1)
+// ============================================================================
+
+/// Cell - the universal unit in CNWS
+/// Every weight, memory location, routing policy, and composition is a Cell
+/// 
+/// Spec Ref: 05-cell-schema.md §4.1 (Cell Structure)
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct Cell {
+    /// Content-addressed identity (BLAKE3-256)
+    pub id: Blake3Hash,
+    
+    /// Cell type (35 possible types)
+    pub cell_type: CellType,
+    
+    /// Data type (13 possible types)
+    pub data_type: DataType,
+    
+    /// Shape of the cell (dimensions)
+    pub shape: Vec<u32>,
+    
+    /// Number of elements
+    pub num_elements: u64,
+    
+    /// Compression algorithm
+    pub compression: Compression,
+    
+    /// Compressed size in bytes
+    pub compressed_size: u64,
+    
+    /// Uncompressed size in bytes
+    pub uncompressed_size: u64,
+    
+    /// Child cell references (for composition)
+    pub children: Vec<Blake3Hash>,
+    
+    /// Metadata (custom key-value pairs)
+    pub metadata: HashMap<String, String>,
+}
+
+impl Cell {
+    /// Create a new Cell
+    pub fn new(
+        cell_type: CellType,
+        data_type: DataType,
+        shape: Vec<u32>,
+    ) -> Self {
+        let num_elements = shape.iter().fold(1u64, |a, &b| a * (b as u64));
+        let uncompressed_size = num_elements * (data_type.size() as u64);
+        
+        Self {
+            id: Blake3Hash::default(),
+            cell_type,
+            data_type,
+            shape,
+            num_elements,
+            compression: Compression::None,
+            compressed_size: uncompressed_size,
+            uncompressed_size,
+            children: Vec::new(),
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+    
+    /// Set compression
+    pub fn with_compression(mut self, compression: Compression, compressed_size: u64) -> Self {
+        self.compression = compression;
+        self.compressed_size = compressed_size;
+        self
+    }
+    
+    /// Add child cell reference
+    pub fn add_child(&mut self, child_id: Blake3Hash) {
+        self.children.push(child_id);
+    }
+    
+    /// Compute the hash of this cell (content-addressed identity)
+    pub fn compute_id(&mut self) -> Result<Blake3Hash> {
+        let serialized = serde_json::to_vec(self)?;
+        self.id = Blake3Hash::hash(&serialized);
+        Ok(self.id)
+    }
+}
+
+// ============================================================================
+// Tile - Storage Unit (from .cd Format Spec §3.3)
+// ============================================================================
+
+/// Tile - immutable storage unit (32-256 MiB, typically 4 MiB)
+/// 
+/// Spec Ref: 04-cd-format-serialization.md §3.3 (Tile Structure)
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct Tile {
+    /// Content-addressed identity (BLAKE3-256)
+    pub id: Blake3Hash,
+    
+    /// Tile location in .cd store
+    pub location: TileLocation,
+    
+    /// Cell IDs stored in this tile
+    pub cell_ids: Vec<Blake3Hash>,
+    
+    /// Physical size in bytes
+    pub size: u64,
+    
+    /// Deduplication count (how many cells reference this tile)
+    pub dedup_count: u32,
+    
+    /// Timestamp when created
+    pub created_at: u64,
+    
+    /// Checksum (BLAKE3-256)
+    pub checksum: Blake3Hash,
+}
+
+/// Tile location in .cd store
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub struct TileLocation {
+    /// Segment index
+    pub segment_idx: u32,
+    
+    /// Tile offset within segment (in tile units)
+    pub tile_offset: u32,
+    
+    /// Position in bytes within segment
+    pub byte_offset: u64,
+}
+
+impl Tile {
+    /// Create a new Tile
+    pub fn new(location: TileLocation) -> Self {
+        Self {
+            id: Blake3Hash::default(),
+            location,
+            cell_ids: Vec::new(),
+            size: 0,
+            dedup_count: 1,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            checksum: Blake3Hash::default(),
+        }
+    }
+    
+    /// Add cell to tile
+    pub fn add_cell(&mut self, cell_id: Blake3Hash) {
+        self.cell_ids.push(cell_id);
+    }
+    
+    /// Compute tile ID and checksum
+    pub fn compute_id(&mut self, data: &[u8]) -> Result<Blake3Hash> {
+        self.checksum = Blake3Hash::hash(data);
+        self.size = data.len() as u64;
+        self.id = self.checksum; // Tile ID = content hash
+        Ok(self.id)
+    }
+}
+
+// ============================================================================
+// Cell Reference - Pointer to a Cell
+// ============================================================================
+
+/// Reference to a Cell with optional tile location
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub struct CellRef {
+    /// Cell ID (BLAKE3-256)
+    pub id: Blake3Hash,
+    
+    /// Optional tile location hint (for efficient loading)
+    pub tile_location: Option<TileLocation>,
+}
+
+impl CellRef {
+    /// Create a new CellRef
+    pub fn new(id: Blake3Hash) -> Self {
+        Self {
+            id,
+            tile_location: None,
+        }
+    }
+    
+    /// Create a CellRef with tile location hint
+    pub fn with_location(id: Blake3Hash, location: TileLocation) -> Self {
+        Self {
+            id,
+            tile_location: Some(location),
+        }
+    }
+}
+
+// ============================================================================
+// Tile Reference - Pointer to a Tile
+// ============================================================================
+
+/// Reference to a Tile with metadata
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub struct TileRef {
+    /// Tile ID (BLAKE3-256)
+    pub id: Blake3Hash,
+    
+    /// Tile location
+    pub location: TileLocation,
+    
+    /// Tile size in bytes
+    pub size: u64,
+}
+
+impl TileRef {
+    /// Create a new TileRef
+    pub fn new(id: Blake3Hash, location: TileLocation, size: u64) -> Self {
+        Self {
+            id,
+            location,
+            size,
+        }
+    }
+}
+
+// ============================================================================
+// Index Vector - Sparse indexing
+// ============================================================================
+
+/// Index vector for sparse indexing and routing
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct IndexVector {
+    /// Vector dimensions
+    pub dimensions: u32,
+    
+    /// Vector values (sparse representation)
+    pub values: Vec<IndexEntry>,
+    
+    /// Norm of the vector
+    pub norm: f32,
+}
+
+/// Index entry in index vector
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct IndexEntry {
+    /// Dimension index
+    pub index: u32,
+    
+    /// Value
+    pub value: Vec<u8>, // Stored as bytes for type flexibility
+}
+
+impl IndexVector {
+    /// Create a new IndexVector
+    pub fn new(dimensions: u32) -> Self {
+        Self {
+            dimensions,
+            values: Vec::new(),
+            norm: 0.0,
+        }
+    }
+    
+    /// Add an entry
+    pub fn add_entry(&mut self, index: u32, value: Vec<u8>) {
+        self.values.push(IndexEntry { index, value });
+    }
+}
+
+// ============================================================================
+// Metadata Schema
+// ============================================================================
+
+/// Metadata schema for cells and tiles
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct Metadata {
+    /// Schema version
+    pub version: Version,
+    
+    /// Owner identifier
+    pub owner: String,
+    
+    /// Creation timestamp (seconds since epoch)
+    pub created_at: u64,
+    
+    /// Last modified timestamp
+    pub modified_at: u64,
+    
+    /// Custom attributes
+    pub attributes: HashMap<String, serde_json::Value>,
+    
+    /// Provenance (where it came from)
+    pub provenance: Option<Provenance>,
+}
+
+/// Provenance information
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct Provenance {
+    /// Source model (e.g., "llama-7b")
+    pub source_model: String,
+    
+    /// Import format (e.g., "safetensors", "gguf")
+    pub import_format: String,
+    
+    /// Import timestamp
+    pub import_timestamp: u64,
+    
+    /// Import revision/version
+    pub revision: String,
+}
+
+impl Metadata {
+    /// Create new metadata
+    pub fn new(owner: String) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        Self {
+            version: Version::current(),
+            owner,
+            created_at: now,
+            modified_at: now,
+            attributes: std::collections::HashMap::new(),
+            provenance: None,
+        }
+    }
+}

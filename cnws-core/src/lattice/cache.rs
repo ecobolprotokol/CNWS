@@ -52,6 +52,7 @@ pub struct CacheEntry {
 impl CacheEntry {
     /// Create a new cache entry
     pub fn new(hash: Blake3Hash, data: Vec<u8>, level: CacheLevel) -> Self {
+        let size = data.len();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -60,7 +61,7 @@ impl CacheEntry {
         Self {
             hash,
             data,
-            size: data.len(),
+            size,
             access_count: 1,
             last_accessed: now,
             level,
