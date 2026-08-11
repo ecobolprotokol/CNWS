@@ -836,7 +836,7 @@ pub enum RecoveryStatus {
 |---|---|
 | API-STOR-INV-1 | Store open MUST idempotent untuk path yang sama |
 | API-STOR-INV-2 | Tile read MUST async |
-| API-STOR-INV-3 | Tile read_verified MUST melakukan BLAKE3 verification |
+| API-STOR-INV-3 | Semua Tile read yang dapat dipakai runtime MUST melakukan BLAKE3 verification; raw/unverified read hanya boleh internal untuk tooling verifikasi |
 | API-STOR-INV-4 | GC MUST NOT menghapus Tile reachable |
 | API-STOR-INV-5 | Store close MUST flush semua pending writes |
 
@@ -1336,7 +1336,7 @@ pub struct MemoryEntry {
     pub key_vector: Vec<f32>,
     pub value: Vec<u8>,
     pub created_at: u64,
-    pub access_count: u64,
+    pub access_count: u64, // Read projection from mutable MemoryIndex
     pub importance_score: f32,
     pub consolidation_level: u8,
 }
@@ -1512,7 +1512,7 @@ pub struct TimeoutConfig {
 // Usage with timeout
 let result = tokio::time::timeout(
     Duration::from_millis(config.io_timeout_ms),
-    store.read_tile(tile_id),
+    store.read_tile_verified(tile_id),
 ).await??;
 ```
 
@@ -1708,7 +1708,7 @@ message Error {
 {
     let store = StorageEngine::open(&config)?;
     let cell = store.resolve_cell(&cell_id)?;
-    let tile = store.read_tile(tile_id).await?;
+    let tile = store.read_tile_verified(tile_id).await?;
     
     // Use tile...
     

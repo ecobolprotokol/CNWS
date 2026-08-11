@@ -167,9 +167,7 @@ struct MemoryCell {
     // Associations
     associations: Vec<MemoryAssociation>,
     
-    // Statistics
-    access_count: u64,
-    last_access_ns: u64,
+    // Access statistics live in the mutable MemoryIndex, not in the immutable entry.
     created_at_ns: u64,
     importance_score: f32,
     
@@ -827,10 +825,9 @@ function retrieve(query: Vec<f32>, config: RetrievalConfig) -> Vec<MemoryEntry>:
     // 6. Take top-k
     results = scored[:config.k]
     
-    // 7. Update access statistics
+    // 7. Update mutable index statistics without rewriting the entry
     for (memory, _) in results:
-        memory.access_count += 1
-        memory.last_access_ns = now()
+        index.increment_access(memory.id, now())
     
     return results
 ```
@@ -1429,14 +1426,14 @@ MemoryEntry (binary):
   value_size:         8 bytes (u64 LE)
   association_count:  8 bytes (u64 LE)
   created_at_ns:      8 bytes (u64 LE)
-  access_count:       8 bytes (u64 LE)
-  last_access_ns:     8 bytes (u64 LE)
   importance_score:   4 bytes (f32 LE)
   padding:            3 bytes
   key_vector:         key_dim × 4 bytes (f32 LE)
   value_payload:      value_size bytes
-  associations:       association_count × 48 bytes
+    associations:       association_count × 48 bytes
 ```
+
+Access statistics (`access_count`, `last_access_ns`) MUST be stored in the mutable MemoryIndex defined by the `.cd` Format Specification, not in the immutable MemoryEntry serialization.
 
 ## 15.3 Memory Index Serialization
 

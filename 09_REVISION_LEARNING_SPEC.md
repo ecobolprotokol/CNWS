@@ -124,7 +124,7 @@ struct Revision {
     root_manifest: ManifestId,
     changed_cells: Vec<CellId>,
     changed_tiles: TileChanges,
-    changed_memory: Vec<CellId>,
+    changed_memory: Vec<MemoryId>,
     changed_routing: Vec<CellId>,
     changed_compositions: Vec<CellId>,
     
@@ -299,10 +299,11 @@ revision_id = BLAKE3-256(
     parent_ids ||
     changed_cells ||
     changed_tiles ||
-    manifest_hash ||
-    created_at
+    manifest_hash
 )
 ```
+
+`[REV-CRE-4a]` `created_at`, author, message, dan metadata adalah metadata Revision dan MUST NOT menjadi bagian dari identity hash; identity hanya bergantung pada parent dan state content yang direferensikan.
 
 ## 3.4 Revision Creation Invariants
 

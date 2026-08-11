@@ -598,11 +598,14 @@ Cell dideskripsikan dalam MANIFEST.cd sebagai JSON object.
 |---|---|---|
 | `id` | MUST | string (b3:...) |
 | `cell_type` | MUST | string (CellType name) |
-| `shape` | MUST | array of integers |
-| `dtype` | MUST | string (DataType name) |
+| `version` | MUST | string (semver) |
+| `input_schema` | MUST | object |
+| `output_schema` | MUST | object |
 | `tiles` | MUST | array of TileRef |
-| `dependencies` | MUST | array of CellId strings |
-| `metadata` | SHOULD | object |
+| `index_vector` | SHOULD | object |
+| `dependencies` | MUST | array of Dependency |
+| `metadata` | MUST | object |
+| `representations` | SHOULD | array |
 
 ## 6.2 Cell Metadata
 
@@ -1054,7 +1057,7 @@ Offset  Size  Field                  Type         Notes
 0x0010  8     segment_id             u64
 0x0018  8     created_at_ns          u64
 0x0020  8     entry_count            u64
-0x0028  8     memory_type            u8           0x20=episodic, 0x21=semantic, 0x22=procedural
+0x0028  8     memory_type            u8           0x20=episodic, 0x21=semantic, 0x22=procedural; other MemoryType values are Cell-level only
 0x0029  7     padding                [u8; 7]
 0x0030  8     payload_region_offset  u64
 0x0038  8     payload_region_size    u64
@@ -1078,8 +1081,6 @@ struct MemoryEntry {
     value_size: u64,             // size of value payload in bytes
     association_count: u64,      // number of associations
     created_at_ns: u64,          // Unix nanoseconds
-    access_count: u64,           // number of accesses
-    last_access_ns: u64,         // last access timestamp
     // Followed by:
     // key_vector: [f32; key_dim]
     // value_payload: [u8; value_size]
@@ -1094,6 +1095,8 @@ memory_id = BLAKE3-256(key_vector_bytes || value_payload_bytes)
 ```
 
 `[CD-MEM-4]` Memory entries MUST immutable setelah ditulis.
+
+`[CD-MEM-4a]` Access statistics MUST disimpan dan dimutasi pada `MemoryIndex`, bukan pada immutable Memory entry.
 
 `[CD-MEM-5]` Memory entries MUST independently loadable.
 
@@ -1386,13 +1389,13 @@ Untuk hashing Cell identity:
 `[CD-CANON-5]` Cell identity dihitung dari canonical Cell payload:
 
 ```text
-cell_payload = normalize(source_tensor)
+cell_payload = canonical_cell_payload_as_defined_by_CELL-SER-3
 cell_id = BLAKE3-256(cell_payload)
 ```
 
-`[CD-CANON-6]` Normalisasi MUST deterministik.
+`[CD-CANON-6]` Canonical Cell serialization MUST deterministik.
 
-`[CD-CANON-7]` Source yang sama dengan policy yang sama MUST menghasilkan Cell ID yang sama.
+`[CD-CANON-7]` Source yang sama dengan policy yang sama MUST menghasilkan canonical Cell payload dan Cell ID yang sama.
 
 ## 15.4 Canonical Manifest Hash
 
