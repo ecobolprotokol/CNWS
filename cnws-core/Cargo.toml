@@ -1,0 +1,93 @@
+[package]
+name = "cnws-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["CNWS Team"]
+description = "Canonical Neural Weight System - Core Library"
+license = "Apache-2.0"
+repository = "https://github.com/example/cnws"
+
+[dependencies]
+# Core dependencies
+blake3 = "1.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+hex = "0.4"
+thiserror = "1.0"
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+
+# Concurrency
+parking_lot = "0.12"
+dashmap = "5.5"
+crossbeam = "0.8"
+
+# Compression
+zstd = "0.13"
+lz4 = "1.9"
+flate2 = { version = "1.0", features = ["zlib"], default-features = false }
+brotli = "3.4"
+
+# Serialization
+rmp-serde = "1.1"
+ciborium = "0.2"
+
+# Cryptography
+sha2 = "0.10"
+hmac = "0.12"
+
+# Utilities
+uuid = { version = "1.6", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+num-traits = "0.2"
+bytemuck = { version = "1.14", features = ["derive"] }
+memmap2 = "0.9"
+memchr = "2.6"
+regex = "1.10"
+lazy_static = "1.4"
+once_cell = "1.19"
+
+# Logging and metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+prometheus = { version = "0.13", features = ["process"] }
+opentelemetry = { version = "0.21", features = ["trace"] }
+opentelemetry-jaeger = { version = "0.20" }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+colored = "2.1"
+indicatif = "0.17"
+dialoguer = "0.11"
+console = "0.15"
+
+# Testing
+tempfile = "3.8"
+proptest = "1.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Optional GPU support
+cudarc = { version = "0.9", optional = true }
+wgpu = { version = "0.19", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.4"
+tempfile = "3.8"
+
+[features]
+default = ["std"]
+std = []
+gpu = ["cudarc", "wgpu"]
+jaeger = ["opentelemetry-jaeger"]
+
+[[bin]]
+name = "cnws"
+path = "src/bin/main.rs"
+
+[[bench]]
+name = "benchmarks"
+harness = false

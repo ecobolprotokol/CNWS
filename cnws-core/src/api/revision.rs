@@ -1,0 +1,86 @@
+//! Revision API - public interface for revision management
+
+use super::super::substrate::revision::RevisionManager;
+use crate::error::{CnwsError, Result};
+use crate::types::Blake3Hash;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Revision API
+pub struct RevisionApi {
+    manager: Arc<RevisionManager>,
+}
+
+impl RevisionApi {
+    /// Create a new revision API
+    pub fn new(manager: Arc<RevisionManager>) -> Self {
+        Self { manager }
+    }
+
+    /// Commit a new revision
+    pub fn commit(
+        &self,
+        parent: Option<Blake3Hash>,
+        changed_cells: Vec<Blake3Hash>,
+        changed_tiles: Vec<Blake3Hash>,
+        metadata: HashMap<String, String>,
+    ) -> Result<Blake3Hash> {
+        self.manager.commit(parent, changed_cells, changed_tiles, metadata)
+    }
+
+    /// Get current head revision
+    pub fn head(&self) -> Option<Blake3Hash> {
+        self.manager.head()
+    }
+
+    /// Get revision by ID
+    pub fn get(&self, id: &Blake3Hash) -> Option<crate::substrate::revision::Revision> {
+        self.manager.get(id)
+    }
+
+    /// Check if revision exists
+    pub fn exists(&self, id: &Blake3Hash) -> bool {
+        self.manager.exists(id)
+    }
+
+    /// Get ancestors of a revision
+    pub fn ancestors(&self, id: Blake3Hash) -> Vec<Blake3Hash> {
+        self.manager.ancestors(id).into_iter().collect()
+    }
+
+    /// Get common ancestor of two revisions
+    pub fn common_ancestor(&self, id1: Blake3Hash, id2: Blake3Hash) -> Option<Blake3Hash> {
+        self.manager.common_ancestor(id1, id2)
+    }
+
+    /// Load revisions from store
+    pub fn load(&self) -> Result<()> {
+        self.manager.load()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::substrate::storage::{StorageEngine, StoreConfig};
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_revision_api() {
+        let dir = tempdir().unwrap();
+        let config = StoreConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let engine = StorageEngine::create_store(config).unwrap();
+        let engine = Arc::new(engine);
+        let manager = std::sync::Arc::new(crate::substrate::revision::RevisionManager::new(engine));
+        let api = RevisionApi::new(manager);
+
+        let id = api.commit(None, vec![], vec![], HashMap::new()).unwrap();
+        assert!(api.exists(&id));
+        assert_eq!(api.head(), Some(id));
+    }
+}

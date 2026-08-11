@@ -1,0 +1,15 @@
+[package]
+name = "cnws-cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["CNWS Team"]
+description = "Canonical Neural Weight System - CLI"
+license = "Apache-2.0"
+
+[dependencies]
+cnws-core = { path = "../cnws-core" }
+clap = { version = "4.4", features = ["derive"] }
+tokio = { version = "1.35", features = ["full"] }
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

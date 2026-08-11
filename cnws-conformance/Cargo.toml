@@ -1,0 +1,13 @@
+[package]
+name = "cnws-conformance"
+version = "0.1.0"
+edition = "2021"
+authors = ["CNWS Team"]
+description = "CNWS Conformance Test Runner"
+license = "Apache-2.0"
+
+[dependencies]
+cnws-core = { path = "../cnws-core" }
+clap = { version = "4.4", features = ["derive"] }
+tempfile = "3.8"
+hex = "0.4"
