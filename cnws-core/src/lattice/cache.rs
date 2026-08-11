@@ -290,7 +290,7 @@ impl CacheManager {
             self.insert(hash, data, to);
             Ok(())
         } else {
-            Err(CnwsError::CacheMiss(hash))
+            Err(CnwsError::CacheMiss)
         }
     }
 
@@ -300,7 +300,7 @@ impl CacheManager {
             self.insert(hash, data, to);
             Ok(())
         } else {
-            Err(CnwsError::CacheMiss(hash))
+            Err(CnwsError::CacheMiss)
         }
     }
 }

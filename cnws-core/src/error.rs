@@ -14,17 +14,17 @@ pub enum CnwsError {
     #[error("Corrupt store")]
     CorruptStore,
 
-    #[error("Tile not found: {0}")]
-    TileNotFound([u8; 32]),
+    #[error("Tile not found")]
+    TileNotFound,
 
-    #[error("Cell not found: {0}")]
-    CellNotFound([u8; 32]),
+    #[error("Cell not found")]
+    CellNotFound,
 
-    #[error("Memory not found: {0}")]
-    MemoryNotFound([u8; 32]),
+    #[error("Memory not found")]
+    MemoryNotFound,
 
-    #[error("Revision not found: {0}")]
-    RevisionNotFound([u8; 32]),
+    #[error("Revision not found")]
+    RevisionNotFound,
 
     #[error("Store full")]
     StoreFull,
@@ -110,8 +110,8 @@ pub enum CnwsError {
     NoRouteFound,
 
     // Cache errors
-    #[error("Cache miss: {0}")]
-    CacheMiss([u8; 32]),
+    #[error("Cache miss")]
+    CacheMiss,
 
     #[error("Cache full")]
     CacheFull,
@@ -143,10 +143,10 @@ impl CnwsError {
         match self {
             Self::StoreNotFound(_) => "CNWS-E-STORE",
             Self::CorruptStore => "CNWS-E-CORRUPT",
-            Self::TileNotFound(_) => "CNWS-E-TILE",
-            Self::CellNotFound(_) => "CNWS-E-CELL",
-            Self::MemoryNotFound(_) => "CNWS-E-MEMORY",
-            Self::RevisionNotFound(_) => "CNWS-E-REVISION",
+            Self::TileNotFound => "CNWS-E-TILE",
+            Self::CellNotFound => "CNWS-E-CELL",
+            Self::MemoryNotFound => "CNWS-E-MEMORY",
+            Self::RevisionNotFound => "CNWS-E-REVISION",
             Self::StoreFull => "CNWS-E-STORE-FULL",
             Self::Io(_) => "CNWS-E-IO",
             Self::Serialization(_) => "CNWS-E-SERIAL",
@@ -172,7 +172,7 @@ impl CnwsError {
             Self::InvalidMemoryType(_) => "CNWS-E-MEMORY",
             Self::RoutingFailed(_) => "CNWS-E-ROUTING",
             Self::NoRouteFound => "CNWS-E-ROUTE",
-            Self::CacheMiss(_) => "CNWS-E-CACHE",
+            Self::CacheMiss => "CNWS-E-CACHE",
             Self::CacheFull => "CNWS-E-CACHE",
             Self::InvalidInput(_) => "CNWS-E-INPUT",
             Self::NotImplemented(_) => "CNWS-E-NOTIMPL",
@@ -195,7 +195,7 @@ impl CnwsError {
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
-            Self::Io(_) | Self::Timeout | Self::CacheMiss(_) | Self::RoutingFailed(_)
+            Self::Io(_) | Self::Timeout | Self::CacheMiss | Self::RoutingFailed(_)
         )
     }
 
@@ -205,6 +205,24 @@ impl CnwsError {
             self,
             Self::Io(_) | Self::Timeout | Self::StoreFull | Self::CacheFull | Self::MemoryFull
         )
+    }
+}
+
+impl From<prometheus::Error> for CnwsError {
+    fn from(e: prometheus::Error) -> Self {
+        CnwsError::Internal(format!("Prometheus error: {}", e))
+    }
+}
+
+impl From<std::string::FromUtf8Error> for CnwsError {
+    fn from(e: std::string::FromUtf8Error) -> Self {
+        CnwsError::Internal(format!("UTF-8 decode error: {}", e))
+    }
+}
+
+impl From<Box<bincode::ErrorKind>> for CnwsError {
+    fn from(e: Box<bincode::ErrorKind>) -> Self {
+        CnwsError::Serialization(format!("Bincode error: {}", e))
     }
 }
 

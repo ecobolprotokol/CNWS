@@ -81,6 +81,24 @@ impl From<Blake3Hash> for [u8; 32] {
     }
 }
 
+impl fmt::LowerHex for Blake3Hash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::UpperHex for Blake3Hash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{:02X}", byte)?;
+        }
+        Ok(())
+    }
+}
+
 // ============================================================================
 // Revision ID (alias for Blake3Hash)
 // ============================================================================
@@ -558,6 +576,12 @@ pub struct TileLocation {
     
     /// Position in bytes within segment
     pub byte_offset: u64,
+    
+    /// Size of the stored data in bytes
+    pub size: u64,
+    
+    /// Compression used for this tile
+    pub compression: Compression,
 }
 
 impl Tile {

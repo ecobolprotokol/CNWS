@@ -2,7 +2,7 @@
 
 use super::super::substrate::storage::{StorageEngine, StoreConfig, StoreStats};
 use super::super::types::{Blake3Hash, Compression};
-use crate::error::{CnwsError, Result};
+use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;

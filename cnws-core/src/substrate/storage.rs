@@ -256,7 +256,7 @@ pub struct StoreStats {
 
 /// Storage engine - manages .cd store
 pub struct StorageEngine {
-    config: StoreConfig,
+    pub config: StoreConfig,
     superblock: Arc<RwLock<Superblock>>,
     registry: Arc<RwLock<TileRegistry>>,
     stats: Arc<RwLock<StoreStats>>,
@@ -368,7 +368,7 @@ impl StorageEngine {
         }
 
         // Save registry
-        self.save_registry(&self.config.path, &self.registry.read())?;
+        StorageEngine::save_registry(&self.config.path, &self.registry.read())?;
 
         Ok(hash)
     }
@@ -379,13 +379,13 @@ impl StorageEngine {
         let location = {
             let registry = self.registry.read();
             registry.get(hash).cloned()
-                .ok_or_else(|| CnwsError::TileNotFound(*hash))?
+                .ok_or_else(|| CnwsError::TileNotFound)?
         };
 
         // Read from segment
         let compressed = self.read_from_segment(&location)?;
 
-        // Decompress
+        // Decompress using the compression recorded in the location
         self.decompress(&compressed, location.compression)
     }
 
@@ -420,6 +420,8 @@ impl StorageEngine {
             segment_idx: 1,
             tile_offset: 0,
             byte_offset: offset,
+            size: data.len() as u64,
+            compression,
         })
     }
 
@@ -433,7 +435,7 @@ impl StorageEngine {
         let mut file = File::open(segment_file)?;
         file.seek(SeekFrom::Start(location.byte_offset))?;
 
-        let mut buf = vec![0u8; 4 * 1024 * 1024]; // Read full tile size
+        let mut buf = vec![0u8; location.size as usize];
         file.read_exact(&mut buf)?;
 
         Ok(buf)
@@ -444,7 +446,7 @@ impl StorageEngine {
         match compression {
             Compression::None => Ok(data.to_vec()),
             Compression::Zstd => {
-                zstd::encode_all(data.as_slice(), 3)
+                zstd::encode_all(data, 3)
                     .map_err(|e| CnwsError::Compression(e.to_string()))
             }
             Compression::Lz4 => {
@@ -460,7 +462,7 @@ impl StorageEngine {
         match compression {
             Compression::None => Ok(data.to_vec()),
             Compression::Zstd => {
-                zstd::decode_all(data.as_slice())
+                zstd::decode_all(data)
                     .map_err(|e| CnwsError::Compression(e.to_string()))
             }
             Compression::Lz4 => {
@@ -490,10 +492,10 @@ impl StorageEngine {
     pub fn delete_tile(&self, hash: &Blake3Hash) -> Result<()> {
         let mut registry = self.registry.write();
         if registry.remove(hash).is_some() {
-            self.save_registry(&self.config.path, &registry)?;
+            StorageEngine::save_registry(&self.config.path, &registry)?;
             Ok(())
         } else {
-            Err(CnwsError::TileNotFound(*hash))
+            Err(CnwsError::TileNotFound)
         }
     }
 
@@ -531,8 +533,9 @@ mod tests {
         let mut registry = TileRegistry::new();
         let hash = Blake3Hash::hash(b"test");
         let location = TileLocation {
-            segment: 1,
-            offset: 0,
+            segment_idx: 1,
+            tile_offset: 0,
+            byte_offset: 0,
             size: 4,
             compression: Compression::None,
         };

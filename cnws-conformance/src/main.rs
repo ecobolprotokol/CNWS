@@ -202,12 +202,13 @@ fn run_cs01() -> Result<()> {
     // FAC-03: Streaming equivalence
     let mut hasher = blake3::Hasher::new();
     hasher.update(data1);
-    let streaming_hash = Blake3Hash(*hasher.finalize().into());
+    let hash_bytes: [u8; 32] = hasher.finalize().into();
+    let streaming_hash = Blake3Hash(hash_bytes);
     assert_eq!(hash1, streaming_hash, "FAC-03: Streaming hash mismatch");
 
     // FAC-04: Collision resistance (basic test)
     let mut hashes = std::collections::HashSet::new();
-    for i in 0..1000 {
+    for i in 0..1000u64 {
         let hash = Blake3Hash::hash(&i.to_le_bytes());
         assert!(hashes.insert(hash), "FAC-04: Collision detected at {}", i);
     }

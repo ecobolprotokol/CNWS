@@ -3,10 +3,9 @@
 
 use crate::error::Result;
 use prometheus::{
-    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec,
+    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts,
     Opts, Registry, TextEncoder,
 };
-use std::sync::Arc;
 
 /// CNWS metrics collector
 pub struct CnwsMetrics {

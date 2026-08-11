@@ -1,7 +1,7 @@
 //! Routing engine - selects optimal Cells for queries
 //! Implements cosine similarity and routing policies
 
-use crate::error::{CnwsError, Result};
+use crate::error::Result;
 use crate::types::Blake3Hash;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -138,7 +138,7 @@ impl RoutingEngine {
     }
 
     /// Compute similarity score (simplified cosine similarity)
-    fn compute_similarity(&self, query: &[f32], metadata: &CellMetadata) -> f32 {
+    fn compute_similarity(&self, _query: &[f32], metadata: &CellMetadata) -> f32 {
         // Simplified - in real implementation would use actual embedding vectors
         // For now, return a score based on access count and recency
         let recency_score = if metadata.last_accessed > 0 {
@@ -158,7 +158,7 @@ impl RoutingEngine {
     }
 
     /// Route a query
-    pub fn route(&self, query: &str) -> Result<Vec<Blake3Hash>> {
+    pub fn route(&self, _query: &str) -> Result<Vec<Blake3Hash>> {
         let policy = *self.policy.read();
         let cells = self.cells.read();
 
@@ -244,7 +244,7 @@ impl RoutingEngine {
 
     /// Update cell metadata
     pub fn update_cell_metadata(&self, hash: &Blake3Hash, metadata: CellMetadata) {
-        self.cells.write().insert(hash, metadata);
+        self.cells.write().insert(*hash, metadata);
     }
 
     /// Remove cell

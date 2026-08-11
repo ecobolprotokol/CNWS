@@ -2,9 +2,7 @@
 
 use super::super::substrate::conversion::{ConversionPipeline, ImportReport, NormalizationPolicy};
 use super::super::types::Compression;
-use crate::error::{CnwsError, Result};
-use std::path::PathBuf;
-use std::sync::Arc;
+use crate::error::Result;
 
 /// Conversion API
 pub struct ConversionApi {
@@ -18,22 +16,22 @@ impl ConversionApi {
     }
 
     /// Import from Safetensors
-    pub fn import_safetensors(&self, path: impl Into<PathBuf>) -> Result<ImportReport> {
+    pub fn import_safetensors(&self, path: impl AsRef<std::path::Path>) -> Result<ImportReport> {
         self.pipeline.import_safetensors(path)
     }
 
     /// Import from GGUF
-    pub fn import_gguf(&self, path: impl Into<PathBuf>) -> Result<ImportReport> {
+    pub fn import_gguf(&self, path: impl AsRef<std::path::Path>) -> Result<ImportReport> {
         self.pipeline.import_gguf(path)
     }
 
     /// Import from PyTorch
-    pub fn import_pytorch(&self, path: impl Into<PathBuf>) -> Result<ImportReport> {
+    pub fn import_pytorch(&self, path: impl AsRef<std::path::Path>) -> Result<ImportReport> {
         self.pipeline.import_pytorch(path)
     }
 
     /// Import from ONNX
-    pub fn import_onnx(&self, path: impl Into<PathBuf>) -> Result<ImportReport> {
+    pub fn import_onnx(&self, path: impl AsRef<std::path::Path>) -> Result<ImportReport> {
         self.pipeline.import_onnx(path)
     }
 

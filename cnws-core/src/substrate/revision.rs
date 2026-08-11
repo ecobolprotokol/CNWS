@@ -3,7 +3,7 @@
 
 use super::storage::StorageEngine;
 use crate::error::{CnwsError, Result};
-use crate::types::{Blake3Hash, CellType, ComputeBudget, RevisionId, TILE_SIZE};
+use crate::types::{Blake3Hash, ComputeBudget, RevisionId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -253,7 +253,8 @@ impl RevisionManager {
         for tile in &changed_tiles {
             hasher.update(&tile.0);
         }
-        let id = RevisionId(*hasher.finalize().into());
+        let hash_bytes: [u8; 32] = hasher.finalize().into();
+        let id = Blake3Hash(hash_bytes);
 
         // Create revision
         let mut revision = Revision::new(
@@ -341,9 +342,9 @@ mod tests {
     fn test_revision_dag_cycle_detection() {
         let mut dag = RevisionDag::new();
 
-        let id1 = RevisionId::default();
-        let id2 = RevisionId([2u8; 32]);
-        let id3 = RevisionId([3u8; 32]);
+        let id1 = Blake3Hash::default();
+        let id2 = Blake3Hash([2u8; 32]);
+        let id3 = Blake3Hash([3u8; 32]);
 
         let rev1 = Revision::new(id1, vec![], vec![], vec![]);
         let rev2 = Revision::new(id2, vec![id1], vec![], vec![]);
@@ -351,6 +352,7 @@ mod tests {
 
         dag.add(rev1).unwrap();
         dag.add(rev2).unwrap();
+        dag.add(rev3).unwrap();
 
         // This should fail - would create cycle
         let rev_cycle = Revision::new(id1, vec![id3], vec![], vec![]);

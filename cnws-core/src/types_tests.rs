@@ -159,10 +159,12 @@ mod tests {
         let location = TileLocation {
             segment_idx: 0,
             tile_offset: 100,
-            byte_offset: 4_194_304, // 1 MB
+            byte_offset: 4_194_304,
+            size: 4_194_304,
+            compression: Compression::None,
         };
         
-        let mut tile = Tile::new(location);
+        let tile = Tile::new(location);
         assert_eq!(tile.location, location);
         assert_eq!(tile.size, 0);
         assert_eq!(tile.dedup_count, 1);
@@ -174,6 +176,8 @@ mod tests {
             segment_idx: 0,
             tile_offset: 0,
             byte_offset: 0,
+            size: 0,
+            compression: Compression::None,
         };
         let mut tile = Tile::new(location);
         
@@ -192,6 +196,8 @@ mod tests {
             segment_idx: 0,
             tile_offset: 0,
             byte_offset: 0,
+            size: 0,
+            compression: Compression::None,
         };
         let mut tile = Tile::new(location);
         
@@ -221,7 +227,9 @@ mod tests {
         let location = TileLocation {
             segment_idx: 1,
             tile_offset: 50,
-            byte_offset: 10_485_760, // 10 MB
+            byte_offset: 10_485_760,
+            size: 4_194_304,
+            compression: Compression::None,
         };
         
         let cell_ref = CellRef::with_location(id, location);
@@ -241,6 +249,8 @@ mod tests {
             segment_idx: 0,
             tile_offset: 0,
             byte_offset: 0,
+            size: 4_194_304,
+            compression: Compression::None,
         };
         
         let tile_ref = TileRef::new(id, location, 4_194_304);
@@ -418,6 +428,8 @@ mod tests {
             segment_idx: 1,
             tile_offset: 50,
             byte_offset: 1024,
+            size: 4096,
+            compression: Compression::None,
         };
         let tile = Tile::new(location);
         

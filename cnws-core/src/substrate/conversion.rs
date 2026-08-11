@@ -2,13 +2,11 @@
 //! Implements streaming-first import with bounded memory
 
 use super::storage::StorageEngine;
-use crate::error::{CnwsError, Result};
-use crate::types::{Blake3Hash, CellType, Compression, DataType};
+use crate::error::Result;
+use crate::types::{Blake3Hash, Compression, DataType};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 /// Normalization policy
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,7 +96,7 @@ impl ConversionPipeline {
 
         // Parse header (simplified - real implementation would use safetensors crate)
         // For now, just store the raw data as a tile
-        let hash = self.store.write_tile(&data, self.compression)?;
+        let _hash = self.store.write_tile(&data, self.compression)?;
         report.tiles_written += 1;
         report.tensors_imported += 1;
         report.cells_created += 1;
@@ -117,7 +115,7 @@ impl ConversionPipeline {
         report.total_bytes = data.len() as u64;
 
         // Parse GGUF (simplified)
-        let hash = self.store.write_tile(&data, self.compression)?;
+        let _hash = self.store.write_tile(&data, self.compression)?;
         report.tiles_written += 1;
         report.tensors_imported += 1;
         report.cells_created += 1;
@@ -136,7 +134,7 @@ impl ConversionPipeline {
         report.total_bytes = data.len() as u64;
 
         // Parse PyTorch (simplified)
-        let hash = self.store.write_tile(&data, self.compression)?;
+        let _hash = self.store.write_tile(&data, self.compression)?;
         report.tiles_written += 1;
         report.tensors_imported += 1;
         report.cells_created += 1;
@@ -154,7 +152,7 @@ impl ConversionPipeline {
         let data = std::fs::read(path.as_ref())?;
         report.total_bytes = data.len() as u64;
 
-        let hash = self.store.write_tile(&data, self.compression)?;
+        let _hash = self.store.write_tile(&data, self.compression)?;
         report.tiles_written += 1;
         report.tensors_imported += 1;
         report.cells_created += 1;
@@ -175,7 +173,7 @@ impl ConversionPipeline {
     }
 
     /// Normalize tensor data
-    pub fn normalize_tensor(&self, data: &[u8], dtype: DataType) -> Result<Vec<u8>> {
+    pub fn normalize_tensor(&self, data: &[u8], _dtype: DataType) -> Result<Vec<u8>> {
         match self.normalization {
             NormalizationPolicy::None => Ok(data.to_vec()),
             _ => {

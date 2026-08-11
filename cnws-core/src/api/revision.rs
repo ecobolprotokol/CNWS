@@ -1,9 +1,8 @@
 //! Revision API - public interface for revision management
 
 use super::super::substrate::revision::RevisionManager;
-use crate::error::{CnwsError, Result};
+use crate::error::Result;
 use crate::types::Blake3Hash;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 

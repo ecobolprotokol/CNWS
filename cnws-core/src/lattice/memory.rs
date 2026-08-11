@@ -5,7 +5,7 @@ use super::routing::RoutingEngine;
 use crate::error::{CnwsError, Result};
 use crate::types::{Blake3Hash, MemoryType};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
@@ -49,7 +49,8 @@ impl MemoryEntry {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&key);
         hasher.update(&value);
-        let id = Blake3Hash(*hasher.finalize().into());
+        let hash_bytes: [u8; 32] = hasher.finalize().into();
+        let id = Blake3Hash(hash_bytes);
 
         Self {
             id,
@@ -74,8 +75,8 @@ impl MemoryEntry {
     }
 }
 
-/// Memory index entry (fixed 104 bytes)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Memory index entry (fixed 104 bytes on-disk)
+#[derive(Debug, Clone)]
 pub struct MemoryIndexEntry {
     /// Memory ID
     pub id: Blake3Hash,
@@ -89,8 +90,6 @@ pub struct MemoryIndexEntry {
     pub last_accessed: u64,
     /// Tag count
     pub tag_count: u8,
-    /// Reserved
-    pub reserved: [u8; 55],
 }
 
 impl MemoryIndexEntry {
@@ -103,7 +102,6 @@ impl MemoryIndexEntry {
             access_count: entry.access_count,
             last_accessed: entry.last_accessed,
             tag_count: entry.tags.len() as u8,
-            reserved: [0u8; 55],
         }
     }
 
@@ -135,7 +133,6 @@ impl MemoryIndexEntry {
             access_count,
             last_accessed,
             tag_count,
-            reserved: [0u8; 55],
         })
     }
 }
@@ -185,7 +182,7 @@ impl MemorySystem {
         self.entries.read()
             .get(id)
             .cloned()
-            .ok_or_else(|| CnwsError::MemoryNotFound(*id))
+            .ok_or_else(|| CnwsError::MemoryNotFound)
     }
 
     /// Search memory by query
@@ -217,7 +214,7 @@ impl MemorySystem {
     pub fn delete(&self, id: &Blake3Hash) -> Result<()> {
         self.entries.write()
             .remove(id)
-            .ok_or_else(|| CnwsError::MemoryNotFound(*id))?;
+            .ok_or_else(|| CnwsError::MemoryNotFound)?;
         Ok(())
     }
 
@@ -242,7 +239,7 @@ impl MemorySystem {
             entry.touch();
             Ok(())
         } else {
-            Err(CnwsError::MemoryNotFound(*id))
+            Err(CnwsError::MemoryNotFound)
         }
     }
 
@@ -279,7 +276,6 @@ mod tests {
             access_count: 5,
             last_accessed: 1234567890,
             tag_count: 2,
-            reserved: [0u8; 55],
         };
 
         let bytes = entry.to_bytes();

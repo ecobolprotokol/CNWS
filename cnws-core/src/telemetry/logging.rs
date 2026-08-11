@@ -5,7 +5,7 @@ use crate::error::{CnwsError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{Event, Level, Metadata, Subscriber};
+use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -145,22 +145,36 @@ impl<S> Layer<S> for JsonLogLayer
 where
     S: Subscriber,
 {
-    fn on_event(&self, event: &Event<'_>, _metadata: &Metadata<'_>) {
-        let mut fields = HashMap::new();
-        let mut message = String::new();
+    fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        struct FieldVisitor {
+            fields: HashMap<String, serde_json::Value>,
+            message: String,
+        }
 
-        event.record(|key: &str, value: &dyn std::fmt::Debug| {
-            if key == "message" {
-                let str_val = format!("{:?}", value);
-                message = str_val;
-            } else {
-                fields.insert(key.to_string(), serde_json::to_value(format!("{:?}", value)).unwrap_or(serde_json::Value::Null));
+        impl tracing::field::Visit for FieldVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.message = format!("{:?}", value);
+                } else {
+                    self.fields.insert(
+                        field.name().to_string(),
+                        serde_json::to_value(format!("{:?}", value))
+                            .unwrap_or(serde_json::Value::Null),
+                    );
+                }
             }
-        });
+        }
+
+        let mut visitor = FieldVisitor {
+            fields: HashMap::new(),
+            message: String::new(),
+        };
+        event.record(&mut visitor);
 
         let level = LogLevel::from(*event.metadata().level());
-        let entry = LogEntry::new(level, message, event.metadata().target())
-            .with_field("fields", fields);
+        let fields_value = serde_json::to_value(&visitor.fields).unwrap_or(serde_json::Value::Null);
+        let entry = LogEntry::new(level, visitor.message, event.metadata().target())
+            .with_field("fields", fields_value);
 
         self.entries.lock().push(entry);
     }

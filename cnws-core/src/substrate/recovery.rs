@@ -5,10 +5,9 @@ use super::storage::StorageEngine;
 use crate::error::{CnwsError, Result};
 use crate::types::Blake3Hash;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
@@ -85,7 +84,7 @@ impl WalRecord {
 }
 
 /// Recovery state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecoveryState {
     /// No recovery needed
     Clean,
@@ -98,7 +97,7 @@ pub enum RecoveryState {
 }
 
 /// Recovery action
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecoveryAction {
     /// No action needed
     None,

@@ -1,9 +1,8 @@
 //! Runtime API - public interface for Cell Graph execution
 
-use super::super::lattice::runtime::{ExecutionEngine, MockResolver, WorkingState};
-use super::super::types::{Blake3Hash, CellType, ComputeBudget, Query};
-use crate::error::{CnwsError, Result};
-use serde::{Deserialize, Serialize};
+use super::super::lattice::runtime::{ExecutionEngine, WorkingState};
+use super::super::types::{Blake3Hash, ComputeBudget, Query};
+use crate::error::Result;
 use std::sync::Arc;
 
 /// Runtime API
@@ -28,7 +27,7 @@ impl RuntimeApi {
     }
 
     /// Set compute budget
-    pub fn with_budget(mut self, budget: ComputeBudget) -> Self {
+    pub fn with_budget(self, _budget: ComputeBudget) -> Self {
         // In real implementation, would update engine budget
         self
     }

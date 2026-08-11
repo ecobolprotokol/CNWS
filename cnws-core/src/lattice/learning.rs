@@ -1,10 +1,10 @@
 //! Learning engine - structural learning for Cell Graph optimization
 //! Implements composition pattern detection and graph optimization
 
-use crate::error::{CnwsError, Result};
+use crate::error::Result;
 use crate::types::Blake3Hash;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
@@ -175,8 +175,8 @@ impl LearningEngine {
             }
             LearningUpdateType::CellMerge => {
                 // Update tile references
-                let mut tile_refs = self.tile_refs.write();
-                for &cell_hash in &update.cells {
+                let _tile_refs = self.tile_refs.write();
+                for &_cell_hash in &update.cells {
                     // In real implementation, would merge cell tiles
                 }
             }
@@ -221,7 +221,7 @@ impl LearningEngine {
                 .or_insert((sequence.clone(), 1));
         }
 
-        for (key, (cells, frequency)) in pattern_map {
+        for (_key, (cells, frequency)) in pattern_map {
             if frequency >= 2 {
                 let pattern = CompositionPattern::new(
                     format!("pattern_{}", patterns.len()),

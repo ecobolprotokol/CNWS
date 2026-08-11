@@ -1,12 +1,9 @@
 //! Distributed tracing for CNWS
 //! Implements OpenTelemetry-compatible tracing
 
-use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{field, span, Level, Span};
-use tracing_subscriber::Layer;
 
 /// Trace context
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,9 +184,9 @@ impl CnwsTracer {
     }
 
     /// Start a new span
-    pub fn start_span(&self, name: impl Into<String>, context: TraceContext) -> SpanGuard {
+    pub fn start_span(&self, name: impl Into<String>, context: TraceContext) -> SpanGuard<'_> {
         let span_data = SpanData::new(name, context);
-        let id = span_data.context.span_id.clone();
+        let _id = span_data.context.span_id.clone();
 
         self.spans.lock().push(span_data.clone());
 
@@ -200,7 +197,7 @@ impl CnwsTracer {
     }
 
     /// Start a child span
-    pub fn start_child_span(&self, name: impl Into<String>, parent: &TraceContext) -> SpanGuard {
+    pub fn start_child_span(&self, name: impl Into<String>, parent: &TraceContext) -> SpanGuard<'_> {
         let child_context = parent.child();
         self.start_span(name, child_context)
     }

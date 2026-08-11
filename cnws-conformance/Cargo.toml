@@ -8,6 +8,7 @@ license = "Apache-2.0"
 
 [dependencies]
 cnws-core = { path = "../cnws-core" }
+blake3 = "1.5"
 clap = { version = "4.4", features = ["derive"] }
 tempfile = "3.8"
 hex = "0.4"

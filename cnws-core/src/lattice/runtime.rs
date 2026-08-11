@@ -6,11 +6,10 @@ use super::memory::MemorySystem;
 use super::routing::RoutingEngine;
 use crate::error::{CnwsError, Result};
 use crate::substrate::storage::StorageEngine;
-use crate::types::{Blake3Hash, CellType, ComputeBudget, Query, RevisionId};
+use crate::types::{Blake3Hash, CellType, ComputeBudget, Query};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 /// Cell reference
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -103,20 +102,22 @@ impl Default for MockResolver {
 impl RuntimeResolver for MockResolver {
     async fn resolve_cell(&self, hash: &Blake3Hash) -> Result<CellRef> {
         self.cells.get(hash).cloned()
-            .ok_or_else(|| CnwsError::CellNotFound(*hash))
+            .ok_or_else(|| CnwsError::CellNotFound)
     }
 
     async fn resolve_cells(&self, hashes: &[Blake3Hash]) -> Result<Vec<CellRef>> {
-        hashes.iter()
-            .map(|h| self.resolve_cell(h))
-            .collect::<Result<Vec<_>>>()
+        let mut results = Vec::with_capacity(hashes.len());
+        for hash in hashes {
+            results.push(self.resolve_cell(hash).await?);
+        }
+        Ok(results)
     }
 
     async fn execute_cell(&self, cell: &CellRef, _inputs: &[CellRef]) -> Result<CellRef> {
         Ok(*cell)
     }
 
-    async fn get_dependencies(&self, cell: &CellRef) -> Result<Vec<CellRef>> {
+    async fn get_dependencies(&self, _cell: &CellRef) -> Result<Vec<CellRef>> {
         Ok(Vec::new())
     }
 }
@@ -165,46 +166,52 @@ impl ExecutionEngine {
     }
 
     /// Execute cells recursively
-    async fn execute_cells(&self, cells: &[CellRef], state: &mut WorkingState) -> Result<()> {
-        for cell in cells {
-            // Check budget
-            if state.compute_used >= self.budget.max_compute {
-                return Err(CnwsError::BudgetExceeded);
-            }
+    fn execute_cells<'a>(
+        &'a self,
+        cells: &'a [CellRef],
+        state: &'a mut WorkingState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            for cell in cells {
+                // Check budget
+                if state.compute_used >= self.budget.max_compute {
+                    return Err(CnwsError::BudgetExceeded);
+                }
 
-            if state.depth >= self.budget.max_depth {
-                return Err(CnwsError::BudgetExceeded);
-            }
+                if state.depth >= self.budget.max_depth {
+                    return Err(CnwsError::BudgetExceeded);
+                }
 
-            // Check cache
-            if let Some(cached) = self.cache.get(&cell.hash) {
+                // Check cache
+                if let Some(cached) = self.cache.get(&cell.hash, super::cache::CacheLevel::L1) {
+                    state.completed_cells.insert(cell.hash);
+                    state.bytes_moved += cached.len() as u64;
+                    continue;
+                }
+
+                // Get dependencies
+                let deps = self.resolver.get_dependencies(cell).await?;
+
+                // Execute dependencies first
+                if !deps.is_empty() {
+                    state.depth += 1;
+                    self.execute_cells(&deps, state).await?;
+                    state.depth -= 1;
+                }
+
+                // Execute cell
+                let _result = self.resolver.execute_cell(cell, &deps).await?;
+
+                // Cache result
+                let result_data = vec![];
+                self.cache.insert(cell.hash, result_data, super::cache::CacheLevel::L1);
+
                 state.completed_cells.insert(cell.hash);
-                state.bytes_moved += cached.len() as u64;
-                continue;
+                state.compute_used += 1;
             }
 
-            // Get dependencies
-            let deps = self.resolver.get_dependencies(cell).await?;
-
-            // Execute dependencies first
-            if !deps.is_empty() {
-                state.depth += 1;
-                self.execute_cells(&deps, state).await?;
-                state.depth -= 1;
-            }
-
-            // Execute cell
-            let result = self.resolver.execute_cell(cell, &deps).await?;
-
-            // Cache result
-            let result_data = vec![]; // In real impl, would get actual data
-            self.cache.insert(cell.hash, result_data);
-
-            state.completed_cells.insert(cell.hash);
-            state.compute_used += 1;
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Get execution state

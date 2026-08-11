@@ -2,14 +2,10 @@
 //! Implements BLAKE3-256 verification, quarantine, and corruption detection
 
 use super::storage::StorageEngine;
-use crate::error::{CnwsError, Result};
-use crate::types::{Blake3Hash, TileLocation};
-use blake3::Hasher;
+use crate::error::Result;
+use crate::types::Blake3Hash;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use parking_lot::RwLock;
 
@@ -37,8 +33,6 @@ pub struct QuarantineEntry {
     pub reason: String,
     /// Timestamp when quarantined
     pub quarantined_at: u64,
-    /// Original location
-    pub original_location: Option<TileLocation>,
 }
 
 /// Quarantine manager
@@ -54,7 +48,7 @@ impl Quarantine {
     }
 
     /// Add a tile to quarantine
-    pub fn add(&mut self, tile_hash: Blake3Hash, reason: String, location: Option<TileLocation>) {
+    pub fn add(&mut self, tile_hash: Blake3Hash, reason: String) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -64,7 +58,6 @@ impl Quarantine {
             tile_hash,
             reason,
             quarantined_at: now,
-            original_location: location,
         });
     }
 
@@ -120,12 +113,9 @@ impl IntegrityVerifier {
         let passed = actual_hash == *tile_hash;
 
         if !passed {
-            // Add to quarantine
-            let location = self.store.get_tile_location(tile_hash);
             self.quarantine.write().add(
                 *tile_hash,
                 format!("Hash mismatch: expected {:x}, got {:x}", tile_hash, actual_hash),
-                location,
             );
         }
 
@@ -151,132 +141,15 @@ impl IntegrityVerifier {
             match self.verify_tile(&tile_hash) {
                 Ok(result) => results.push(result),
                 Err(e) => {
-                    // Add to quarantine on error
                     self.quarantine.write().add(
                         tile_hash,
                         format!("Verification error: {}", e),
-                        self.store.get_tile_location(&tile_hash),
                     );
                 }
             }
         }
 
         Ok(results)
-    }
-
-    /// Verify tile with streaming (for large tiles)
-    pub fn verify_tile_streaming(&self, tile_hash: &Blake3Hash) -> Result<VerificationResult> {
-        let location = self.store.get_tile_location(tile_hash)
-            .ok_or_else(|| CnwsError::TileNotFound(*tile_hash))?;
-
-        // Read from segment
-        let store_path = &self.store.config.path;
-        let segment_file = store_path
-            .join("segments")
-            .join(format!("segment_{:08}.cd", location.segment));
-
-        let mut file = File::open(segment_file)?;
-        file.seek(SeekFrom::Start(location.offset))?;
-
-        // Stream and hash
-        let mut hasher = Hasher::new();
-        let mut buf = [0u8; 65536];
-        let mut remaining = location.size as usize;
-
-        while remaining > 0 {
-            let to_read = remaining.min(buf.len());
-            file.read_exact(&mut buf[..to_read])?;
-            hasher.update(&buf[..to_read]);
-            remaining -= to_read;
-        }
-
-        let actual_hash = Blake3Hash(*hasher.finalize().into());
-        let passed = actual_hash == *tile_hash;
-
-        if !passed {
-            self.quarantine.write().add(
-                *tile_hash,
-                format!("Streaming hash mismatch: expected {:x}, got {:x}", tile_hash, actual_hash),
-                Some(location),
-            );
-        }
-
-        Ok(VerificationResult {
-            tile_hash: *tile_hash,
-            passed,
-            expected_hash: *tile_hash,
-            actual_hash,
-            error: if !passed {
-                Some(format!("Streaming hash mismatch"))
-            } else {
-                None
-            },
-        })
-    }
-
-    /// Verify manifest integrity
-    pub fn verify_manifest(&self, manifest_hash: &Blake3Hash) -> Result<VerificationResult> {
-        // Read manifest
-        let store_path = &self.store.config.path;
-        let manifest_path = store_path.join("MANIFEST.cd");
-
-        if !manifest_path.exists() {
-            return Ok(VerificationResult {
-                tile_hash: *manifest_hash,
-                passed: false,
-                expected_hash: *manifest_hash,
-                actual_hash: Blake3Hash::default(),
-                error: Some("Manifest not found".to_string()),
-            });
-        }
-
-        let data = std::fs::read(&manifest_path)?;
-        let actual_hash = Blake3Hash::hash(&data);
-        let passed = actual_hash == *manifest_hash;
-
-        if !passed {
-            self.quarantine.write().add(
-                *manifest_hash,
-                "Manifest hash mismatch".to_string(),
-                None,
-            );
-        }
-
-        Ok(VerificationResult {
-            tile_hash: *manifest_hash,
-            passed,
-            expected_hash: *manifest_hash,
-            actual_hash,
-            error: if !passed {
-                Some("Manifest hash mismatch".to_string())
-            } else {
-                None
-            },
-        })
-    }
-
-    /// Verify segment index
-    pub fn verify_segment_index(&self, segment_index: u32) -> Result<Vec<VerificationResult>> {
-        let store_path = &self.store.config.path;
-        let index_path = store_path
-            .join("segments")
-            .join(format!("segment_{:08}.idx", segment_index));
-
-        if !index_path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let data = std::fs::read(index_path)?;
-        let actual_hash = Blake3Hash::hash(&data);
-
-        // In real implementation, would parse index and verify each entry
-        Ok(vec![VerificationResult {
-            tile_hash: actual_hash,
-            passed: true,
-            expected_hash: actual_hash,
-            actual_hash,
-            error: None,
-        }])
     }
 
     /// Get quarantine
@@ -311,7 +184,7 @@ mod tests {
     fn test_quarantine() {
         let mut q = Quarantine::new();
         let hash = Blake3Hash::hash(b"test");
-        q.add(hash, "test reason".to_string(), None);
+        q.add(hash, "test reason".to_string());
         assert!(q.contains(&hash));
         assert_eq!(q.len(), 1);
         q.remove(&hash);

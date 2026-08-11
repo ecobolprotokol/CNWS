@@ -3,12 +3,11 @@
 
 use super::revision::RevisionManager;
 use super::storage::StorageEngine;
-use crate::error::{CnwsError, Result};
+use crate::error::Result;
 use crate::types::{Blake3Hash, TILE_SIZE};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 /// Garbage collection report
 #[derive(Debug, Clone, Serialize, Deserialize)]
