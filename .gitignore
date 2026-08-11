@@ -1,0 +1,50 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+*.wasm
+
+# Test artifacts
+tests/output/
+tests/fixtures/*.cd
+*.prof*
+*.log
+
+# Benchmark
+benches/target/
+benches/output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Environment
+.env
+.env.local
+
+# Documentation
+docs/target/
+site/
+
+# CI
+.github/workflows/*.yml.bak

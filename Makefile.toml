@@ -1,0 +1,35 @@
+[task]
+description = "Build the workspace"
+command = "cargo build --workspace"
+
+[task.test]
+description = "Run all tests"
+command = "cargo test --workspace"
+
+[task.lint]
+description = "Run clippy"
+command = "cargo clippy --workspace -- -D warnings"
+
+[task.fmt]
+description = "Format code"
+command = "cargo fmt --all"
+
+[task.conformance]
+description = "Run conformance tests"
+command = "cargo run --bin cnws-conformance"
+
+[task.bench]
+description = "Run benchmarks"
+command = "cargo bench --workspace"
+
+[task.clean]
+description = "Clean build artifacts"
+command = "cargo clean"
+
+[task.setup]
+description = "Setup development environment"
+command = "bash scripts/setup.sh"
+
+[task."check-all"]
+description = "Run all checks"
+depends = ["fmt", "lint", "test", "conformance"]

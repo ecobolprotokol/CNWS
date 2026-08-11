@@ -1,0 +1,13 @@
+[package]
+name = "cnws-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cnws-core = { path = "../cnws-core" }
+tempfile = "3.8"
+tokio = { version = "1.35", features = ["full"] }
+
+[[test]]
+name = "integration"
+path = "integration_test.rs"

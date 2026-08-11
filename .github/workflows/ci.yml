@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Run conformance tests
+        run: cargo run --bin cnws-conformance

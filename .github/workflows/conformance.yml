@@ -1,0 +1,36 @@
+name: Conformance Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Run conformance tests
+        run: cargo run --bin cnws-conformance -- --verbose
+
+      - name: Upload conformance results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-results
+          path: target/conformance/
