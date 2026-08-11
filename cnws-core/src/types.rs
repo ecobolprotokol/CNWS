@@ -22,7 +22,7 @@ impl Blake3Hash {
     }
 
     /// Compute BLAKE3-256 hash from stream
-    pub fn hash_streaming<R: std::io::Read>(mut reader: R) -> Result<Self, std::io::Error> {
+    pub fn hash_streaming<R: std::io::Read>(mut reader: R) -> std::result::Result<Self, std::io::Error> {
         let mut hasher = blake3::Hasher::new();
         let mut buf = [0u8; 65536];
         loop {
@@ -41,7 +41,7 @@ impl Blake3Hash {
     }
 
     /// Parse from hex string
-    pub fn from_hex(s: &str) -> Result<Self, hex::FromHexError> {
+    pub fn from_hex(s: &str) -> std::result::Result<Self, hex::FromHexError> {
         let bytes = hex::decode(s)?;
         if bytes.len() != 32 {
             return Err(hex::FromHexError::InvalidStringLength);
@@ -509,7 +509,8 @@ impl Cell {
     
     /// Compute the hash of this cell (content-addressed identity)
     pub fn compute_id(&mut self) -> Result<Blake3Hash> {
-        let serialized = serde_json::to_vec(self)?;
+        let serialized = serde_json::to_vec(self)
+            .map_err(|e| CnwsError::InvalidInput(format!("Failed to serialize cell: {}", e)))?;
         self.id = Blake3Hash::hash(&serialized);
         Ok(self.id)
     }
@@ -655,7 +656,7 @@ impl TileRef {
 // ============================================================================
 
 /// Index vector for sparse indexing and routing
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexVector {
     /// Vector dimensions
     pub dimensions: u32,

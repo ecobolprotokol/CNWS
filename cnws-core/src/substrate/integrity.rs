@@ -1,9 +1,9 @@
 //! Integrity verification subsystem
 //! Implements BLAKE3-256 verification, quarantine, and corruption detection
 
-use super::storage::{StorageEngine, TileLocation};
+use super::storage::StorageEngine;
 use crate::error::{CnwsError, Result};
-use crate::types::Blake3Hash;
+use crate::types::{Blake3Hash, TileLocation};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -303,8 +303,8 @@ impl IntegrityVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::substrate::storage::StorageEngine;
-    use crate::types::StoreConfig;
+    use crate::substrate::storage::{StorageEngine, StoreConfig};
+    use crate::types::Compression;
     use tempfile::tempdir;
 
     #[test]

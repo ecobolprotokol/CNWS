@@ -1,9 +1,8 @@
 //! Storage engine for .cd store format
 //! Implements tile-based immutable storage with content addressing
 
-use crate::types::{Blake3Hash, CellType, Compression, DataType, TileLocation, TILE_SIZE, SUPERBLOCK_MAGIC, SUPERBLOCK_SIZE};
+use crate::types::{Blake3Hash, Compression, TileLocation, SUPERBLOCK_MAGIC, SUPERBLOCK_SIZE, SEGMENT_HEADER_SIZE};
 use crate::error::{CnwsError, Result};
-use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -13,7 +12,8 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 /// Superblock - fixed 4096-byte header at start of store
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Stored in binary format (NOT serde) for compatibility
+#[derive(Debug, Clone)]
 pub struct Superblock {
     /// Magic bytes: "CNWSSB01"
     pub magic: [u8; 8],
@@ -29,8 +29,6 @@ pub struct Superblock {
     pub tile_count: u64,
     /// Total store size in bytes
     pub total_size: u64,
-    /// Reserved for future use
-    pub reserved: [u8; 4052],
 }
 
 impl Superblock {
@@ -49,11 +47,10 @@ impl Superblock {
             segment_count: 0,
             tile_count: 0,
             total_size: SUPERBLOCK_SIZE as u64,
-            reserved: [0u8; 4052],
         }
     }
 
-    /// Serialize to bytes (little-endian)
+    /// Serialize to bytes (little-endian, 4096 bytes)
     pub fn to_bytes(&self) -> [u8; SUPERBLOCK_SIZE] {
         let mut buf = [0u8; SUPERBLOCK_SIZE];
         buf[0..8].copy_from_slice(&self.magic);
@@ -88,13 +85,13 @@ impl Superblock {
             segment_count,
             tile_count,
             total_size,
-            reserved: [0u8; 4052],
         })
     }
 }
 
 /// Segment header - fixed 4096-byte header for each segment
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Stored in binary format (NOT serde) for compatibility
+#[derive(Debug, Clone)]
 pub struct SegmentHeader {
     /// Magic bytes: "CNWSSEG1"
     pub magic: [u8; 8],
@@ -110,8 +107,6 @@ pub struct SegmentHeader {
     pub size: u64,
     /// Segment checksum (BLAKE3-256)
     pub checksum: [u8; 32],
-    /// Reserved
-    pub reserved: [u8; 4032],
 }
 
 impl SegmentHeader {
@@ -125,13 +120,12 @@ impl SegmentHeader {
             start_offset,
             size: 0,
             checksum: [0u8; 32],
-            reserved: [0u8; 4032],
         }
     }
 
     /// Serialize to bytes
-    pub fn to_bytes(&self) -> [u8; SUPERBLOCK_SIZE] {
-        let mut buf = [0u8; SUPERBLOCK_SIZE];
+    pub fn to_bytes(&self) -> [u8; SEGMENT_HEADER_SIZE] {
+        let mut buf = [0u8; SEGMENT_HEADER_SIZE];
         buf[0..8].copy_from_slice(&self.magic);
         buf[8..12].copy_from_slice(&self.index.to_le_bytes());
         buf[12..16].copy_from_slice(&self.segment_type.to_le_bytes());
@@ -143,7 +137,7 @@ impl SegmentHeader {
     }
 
     /// Deserialize from bytes
-    pub fn from_bytes(buf: &[u8; SUPERBLOCK_SIZE]) -> Result<Self> {
+    pub fn from_bytes(buf: &[u8; SEGMENT_HEADER_SIZE]) -> Result<Self> {
         let magic = <[u8; 8]>::try_from(&buf[0..8]).map_err(|_| CnwsError::CorruptStore)?;
         if magic != *b"CNWSSEG1" {
             return Err(CnwsError::CorruptStore);
@@ -164,9 +158,7 @@ impl SegmentHeader {
             start_offset,
             size,
             checksum,
-            reserved: [0u8; 4032],
-        }
-        )
+        })
     }
 }
 
@@ -425,10 +417,9 @@ impl StorageEngine {
         file.sync_all()?;
 
         Ok(TileLocation {
-            segment: 1,
-            offset,
-            size: data.len() as u32,
-            compression,
+            segment_idx: 1,
+            tile_offset: 0,
+            byte_offset: offset,
         })
     }
 
@@ -437,12 +428,12 @@ impl StorageEngine {
         let store_path = &self.config.path;
         let segment_file = store_path
             .join("segments")
-            .join(format!("segment_{:08}.cd", location.segment));
+            .join(format!("segment_{:08}.cd", location.segment_idx));
 
         let mut file = File::open(segment_file)?;
-        file.seek(SeekFrom::Start(location.offset))?;
+        file.seek(SeekFrom::Start(location.byte_offset))?;
 
-        let mut buf = vec![0u8; location.size as usize];
+        let mut buf = vec![0u8; 4 * 1024 * 1024]; // Read full tile size
         file.read_exact(&mut buf)?;
 
         Ok(buf)
