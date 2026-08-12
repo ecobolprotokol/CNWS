@@ -19,6 +19,28 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 
+/// Sanitize a tensor name to prevent path traversal and injection attacks
+pub fn sanitize_tensor_name(name: &str) -> Result<String> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(CnwsError::InvalidInput(
+            format!("Tensor name contains path traversal: {}", name)
+        ));
+    }
+    if name.contains('\0') {
+        return Err(CnwsError::InvalidInput(
+            format!("Tensor name contains null byte: {}", name)
+        ));
+    }
+    for c in name.chars() {
+        if c.is_control() {
+            return Err(CnwsError::InvalidInput(
+                format!("Tensor name contains control character: {}", name)
+            ));
+        }
+    }
+    Ok(name.to_string())
+}
+
 /// Supported import formats
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImportFormat {
@@ -325,6 +347,8 @@ impl TensorReader for SafetensorsReader {
 
         let name = &self.tensor_names[self.current_index];
         self.current_index += 1;
+
+        let _sanitized_name = sanitize_tensor_name(&name)?;
 
         if let Some((dtype, shape, begin, end)) = self.tensor_info(name) {
             let data_start = (8 + self.header_len as u64 + begin) as usize;
@@ -738,5 +762,57 @@ mod tests {
         let formats = ConversionPipeline::supported_formats();
         assert!(formats.contains(&ImportFormat::Safetensors));
         assert!(formats.contains(&ImportFormat::Gguf));
+    }
+
+    #[test]
+    fn test_tensor_name_sanitization() {
+        assert!(sanitize_tensor_name("model.layer.0.weight").is_ok());
+        assert!(sanitize_tensor_name("attention_q_proj").is_ok());
+
+        assert!(sanitize_tensor_name("../etc/passwd").is_err());
+        assert!(sanitize_tensor_name("model/../../secret").is_err());
+        assert!(sanitize_tensor_name("model\\..\\windows").is_err());
+
+        assert!(sanitize_tensor_name("model\0secret").is_err());
+
+        assert!(sanitize_tensor_name("model\x01\x02weight").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_tensor_name_valid() {
+        assert!(sanitize_tensor_name("model.layer.0.weight").is_ok());
+        assert!(sanitize_tensor_name("attention.q_proj").is_ok());
+        assert!(sanitize_tensor_name("tensor_123").is_ok());
+    }
+
+    #[test]
+    fn test_sanitize_tensor_name_path_traversal_slash() {
+        assert!(sanitize_tensor_name("../etc/passwd").is_err());
+        assert!(sanitize_tensor_name("model/../../secret").is_err());
+        assert!(sanitize_tensor_name("tensor/name").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_tensor_name_path_traversal_backslash() {
+        assert!(sanitize_tensor_name("..\\windows\\system32").is_err());
+        assert!(sanitize_tensor_name("model\\..\\secret").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_tensor_name_dotdot() {
+        assert!(sanitize_tensor_name("..").is_err());
+        assert!(sanitize_tensor_name("model..weight").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_tensor_name_null_byte() {
+        assert!(sanitize_tensor_name("tensor\0name").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_tensor_name_control_chars() {
+        assert!(sanitize_tensor_name("tensor\nname").is_err());
+        assert!(sanitize_tensor_name("tensor\tname").is_err());
+        assert!(sanitize_tensor_name("tensor\x01name").is_err());
     }
 }

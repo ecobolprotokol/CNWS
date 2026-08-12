@@ -305,13 +305,69 @@ impl PrefetchEngine {
         &self,
         _current_depth: u32,
         _max_depth: u32,
-        _available_bandwidth_bytes: u64,
+        available_bandwidth_bytes: u64,
         dependency_graph: &HashMap<Blake3Hash, Vec<Dependency>>,
         estimated_sizes: &HashMap<Blake3Hash, u64>,
         entry_cells: &[Blake3Hash],
     ) -> Result<PrefetchPlan> {
-        // Plan prefetches for entry cells
-        self.plan_prefetch(entry_cells, dependency_graph, estimated_sizes)
+        let mut requests = Vec::new();
+        let mut visited = HashSet::new();
+        let mut total_bytes = 0u64;
+
+        let mut queue = VecDeque::new();
+
+        for &cell_hash in entry_cells {
+            if !visited.contains(&cell_hash) && self.cache.get_any(&cell_hash).is_none() {
+                queue.push_back((cell_hash, PrefetchPriority::Critical, 0u32));
+                visited.insert(cell_hash);
+            }
+        }
+
+        while let Some((cell_hash, priority, depth)) = queue.pop_front() {
+            let size = estimated_sizes.get(&cell_hash).copied().unwrap_or(0);
+
+            if total_bytes + size > available_bandwidth_bytes {
+                break;
+            }
+
+            requests.push(PrefetchRequest {
+                cell_hash,
+                priority,
+                estimated_size: size,
+                deadline_us: None,
+            });
+            total_bytes += size;
+
+            if let Some(deps) = dependency_graph.get(&cell_hash) {
+                for dep in deps {
+                    if !visited.contains(&dep.target) {
+                        let dep_priority = match dep.dep_type {
+                            DependencyType::Data => PrefetchPriority::Critical,
+                            DependencyType::Control => PrefetchPriority::High,
+                            DependencyType::ExecutionOrder => PrefetchPriority::Medium,
+                            DependencyType::PrefetchHint => PrefetchPriority::Low,
+                            DependencyType::Semantic => continue,
+                        };
+
+                        if dep_priority as u8 <= PrefetchPriority::Low as u8 {
+                            visited.insert(dep.target);
+                            queue.push_back((dep.target, dep_priority, depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        requests.sort_by_key(|r| r.priority);
+
+        let estimated_latency_us = (requests.len() as u64) * 1000
+            + (total_bytes / (1024 * 1024)) * 100;
+
+        Ok(PrefetchPlan {
+            requests,
+            total_bytes,
+            estimated_latency_us,
+        })
     }
 
     /// Check if a cell is already prefetched
@@ -392,5 +448,36 @@ mod tests {
         let stats = engine.statistics();
         assert_eq!(stats.total_requests, 0);
         assert_eq!(stats.successful, 0);
+    }
+
+    #[test]
+    fn test_adaptive_depth_prefetch() {
+        use crate::lattice::cache::CacheManager;
+        use crate::types::Dependency;
+        use std::collections::HashMap;
+
+        let cache = Arc::new(CacheManager::new());
+        let engine = PrefetchEngine::new(cache);
+
+        let cell1 = Blake3Hash::hash(b"cell1");
+        let cell2 = Blake3Hash::hash(b"cell2");
+        let cell3 = Blake3Hash::hash(b"cell3");
+
+        let mut dep_graph = HashMap::new();
+        dep_graph.insert(cell1, vec![Dependency::data(cell2)]);
+        dep_graph.insert(cell2, vec![Dependency::data(cell3)]);
+
+        let mut sizes = HashMap::new();
+        sizes.insert(cell1, 1024);
+        sizes.insert(cell2, 2048);
+        sizes.insert(cell3, 4096);
+
+        let plan = engine.adaptive_depth_prefetch(
+            0, 10, 5000,
+            &dep_graph, &sizes, &[cell1]
+        ).unwrap();
+
+        assert!(plan.requests.len() >= 1);
+        assert!(plan.total_bytes <= 5000);
     }
 }

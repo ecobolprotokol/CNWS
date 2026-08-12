@@ -394,7 +394,15 @@ impl Manifest {
 
     /// Convert to canonical JSON (sorted keys, deterministic)
     pub fn to_canonical_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
+        let value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        canonicalize_json(&value)
+    }
+
+    /// Verify the manifest's hash matches its current content
+    pub fn verify_hash(&self) -> bool {
+        let canonical = self.to_canonical_json();
+        let computed = Blake3Hash::hash(canonical.as_bytes());
+        computed == self.compute_hash()
     }
 
     /// Save manifest to JSON file
@@ -485,6 +493,27 @@ impl Manifest {
                     .push(dep.target.clone());
             }
         }
+    }
+}
+
+fn canonicalize_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut sorted: Vec<_> = map.iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(b.0));
+            let inner: Vec<String> = sorted.iter()
+                .map(|(k, v)| format!("\"{}\":{}", k, canonicalize_json(v)))
+                .collect();
+            format!("{{{}}}", inner.join(","))
+        }
+        serde_json::Value::Array(arr) => {
+            let inner: Vec<String> = arr.iter().map(canonicalize_json).collect();
+            format!("[{}]", inner.join(","))
+        }
+        serde_json::Value::String(s) => serde_json::to_string(s).unwrap(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => "null".to_string(),
     }
 }
 

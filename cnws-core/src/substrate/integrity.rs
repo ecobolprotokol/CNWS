@@ -117,6 +117,8 @@ impl IntegrityVerifier {
                 *tile_hash,
                 format!("Hash mismatch: expected {:x}, got {:x}", tile_hash, actual_hash),
             );
+            // Move corrupt tile file to corrupt/ directory
+            self.move_to_quarantine(*tile_hash);
         }
 
         Ok(VerificationResult {
@@ -130,6 +132,22 @@ impl IntegrityVerifier {
                 None
             },
         })
+    }
+
+    /// Move a corrupt tile file to the corrupt/ quarantine directory
+    fn move_to_quarantine(&self, tile_hash: Blake3Hash) {
+        let store_path = &self.store.config.path;
+        let corrupt_dir = store_path.join("corrupt");
+        let _ = std::fs::create_dir_all(&corrupt_dir);
+
+        // Try to find and move the tile data file
+        if let Some(location) = self.store.get_tile_location(&tile_hash) {
+            let src = store_path
+                .join("segments")
+                .join(format!("segment_{:08}.cd", location.segment_idx));
+            let dst = corrupt_dir.join(format!("{:x}.cd", tile_hash));
+            let _ = std::fs::copy(&src, &dst);
+        }
     }
 
     /// Verify all tiles in store

@@ -30,6 +30,8 @@ pub struct Manifest {
     pub root_cell: Option<Blake3Hash>,
     /// Head revision ID
     pub head_revision: Option<Blake3Hash>,
+    /// Number of segments
+    pub segment_count: u32,
     /// Metadata
     pub metadata: std::collections::HashMap<String, String>,
 }
@@ -53,6 +55,7 @@ impl Manifest {
             compression,
             root_cell: None,
             head_revision: None,
+            segment_count: 0,
             metadata: std::collections::HashMap::new(),
         }
     }
@@ -100,9 +103,15 @@ impl StorageApi {
         })
     }
 
-    /// Write a tile
+    /// Write a tile using the store's configured compression
     pub fn write_tile(&self, data: &[u8]) -> Result<Blake3Hash> {
-        self.store.write_tile(data, Compression::Zstd)
+        let compression = self.store.config.compression;
+        self.store.write_tile(data, compression)
+    }
+
+    /// Write a tile with explicit compression
+    pub fn write_tile_with(&self, data: &[u8], compression: Compression) -> Result<Blake3Hash> {
+        self.store.write_tile(data, compression)
     }
 
     /// Read a tile
@@ -130,12 +139,32 @@ impl StorageApi {
         self.store.stats()
     }
 
+    /// Get tile location
+    pub fn get_tile_location(&self, hash: &Blake3Hash) -> Option<super::super::types::TileLocation> {
+        self.store.get_tile_location(hash)
+    }
+
+    /// Get segment count
+    pub fn segment_count(&self) -> u32 {
+        self.store.segment_count()
+    }
+
+    /// Get superblock info
+    pub fn superblock(&self) -> crate::substrate::storage::Superblock {
+        self.store.superblock()
+    }
+
     /// Get manifest
     pub fn manifest(&self) -> Result<Manifest> {
         let stats = self.store.stats();
-        let mut manifest = Manifest::new(1, Compression::Zstd);
+        let sb = self.store.superblock();
+        let mut manifest = Manifest::new(sb.version, self.store.config.compression);
         manifest.tile_count = stats.total_tiles;
         manifest.total_size = stats.total_size;
+        manifest.segment_count = stats.total_segments;
+        manifest.cell_count = sb.cell_count;
+        manifest.created_at = sb.created_at;
+        manifest.modified_at = sb.modified_at;
         manifest.compute_hash();
         Ok(manifest)
     }
@@ -164,9 +193,32 @@ mod tests {
     }
 
     #[test]
+    fn test_storage_api_write_tile_with() {
+        let dir = tempdir().unwrap();
+        let api = StorageApi::create(dir.path().join("test.cd"), Compression::None).unwrap();
+        let data = b"test data with explicit compression";
+        let hash = api.write_tile_with(data, Compression::Zstd).unwrap();
+        let read_data = api.read_tile(&hash).unwrap();
+        assert_eq!(data, read_data.as_slice());
+    }
+
+    #[test]
+    fn test_storage_api_tile_location() {
+        let dir = tempdir().unwrap();
+        let api = StorageApi::create(dir.path().join("test.cd"), Compression::None).unwrap();
+        let data = b"location test";
+        let hash = api.write_tile(data).unwrap();
+
+        let location = api.get_tile_location(&hash);
+        assert!(location.is_some());
+        assert_eq!(location.unwrap().size, data.len() as u64);
+    }
+
+    #[test]
     fn test_manifest() {
         let mut manifest = Manifest::new(1, Compression::Zstd);
         manifest.tile_count = 10;
+        manifest.segment_count = 2;
         manifest.compute_hash();
         assert!(manifest.hash != Blake3Hash::default());
     }

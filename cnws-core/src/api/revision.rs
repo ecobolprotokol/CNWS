@@ -82,4 +82,62 @@ mod tests {
         assert!(api.exists(&id));
         assert_eq!(api.head(), Some(id));
     }
+
+    #[test]
+    fn test_revision_merge() {
+        use crate::substrate::storage::{StorageEngine, StoreConfig};
+        use std::sync::Arc;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let config = StoreConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let engine = StorageEngine::create_store(config).unwrap();
+        let engine = Arc::new(engine);
+        let manager = Arc::new(crate::substrate::revision::RevisionManager::new(engine));
+
+        let root = manager.commit(None, vec![], vec![], HashMap::new()).unwrap();
+
+        let a = manager.commit(Some(root), vec![], vec![], HashMap::new()).unwrap();
+
+        let b = manager.commit(Some(root), vec![], vec![], HashMap::new()).unwrap();
+
+        let merged = manager.merge(a, b).unwrap();
+
+        let rev = manager.get(&merged).unwrap();
+        assert_eq!(rev.parents.len(), 2);
+        assert!(rev.parents.contains(&a));
+        assert!(rev.parents.contains(&b));
+    }
+
+    #[test]
+    fn test_revision_rollback() {
+        use crate::substrate::storage::{StorageEngine, StoreConfig};
+        use std::sync::Arc;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let config = StoreConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let engine = StorageEngine::create_store(config).unwrap();
+        let engine = Arc::new(engine);
+        let manager = Arc::new(crate::substrate::revision::RevisionManager::new(engine));
+
+        let rev1 = manager.commit(None, vec![], vec![], HashMap::new()).unwrap();
+        let rev2 = manager.commit(Some(rev1), vec![], vec![], HashMap::new()).unwrap();
+
+        assert_eq!(manager.head(), Some(rev2));
+
+        let old_head = manager.rollback(rev1).unwrap();
+        assert_eq!(old_head, rev2);
+        assert_eq!(manager.head(), Some(rev1));
+
+        assert!(manager.exists(&rev2));
+    }
 }

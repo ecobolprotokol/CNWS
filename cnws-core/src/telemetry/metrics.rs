@@ -31,15 +31,11 @@ pub struct CnwsMetrics {
     // Cache metrics
     cache_hits_total: Counter,
     cache_misses_total: Counter,
-    #[allow(dead_code)]
     cache_size_bytes: GaugeVec,
 
     // Memory metrics
-    #[allow(dead_code)]
     memory_entries_total: GaugeVec,
-    #[allow(dead_code)]
     memory_reads_total: CounterVec,
-    #[allow(dead_code)]
     memory_writes_total: CounterVec,
 
     // Revision metrics
@@ -325,6 +321,26 @@ impl CnwsMetrics {
     /// Update compute budget
     pub fn set_compute_budget(&self, remaining: u64) {
         self.compute_budget_remaining.set(remaining as f64);
+    }
+
+    /// Record a memory read
+    pub fn record_memory_read(&self, memory_type: &str) {
+        self.memory_reads_total.with_label_values(&[memory_type]).inc();
+    }
+
+    /// Record a memory write
+    pub fn record_memory_write(&self, memory_type: &str) {
+        self.memory_writes_total.with_label_values(&[memory_type]).inc();
+    }
+
+    /// Update memory entries count
+    pub fn update_memory_entries(&self, memory_type: &str, count: u64) {
+        self.memory_entries_total.with_label_values(&[memory_type]).set(count as f64);
+    }
+
+    /// Update cache size by level
+    pub fn update_cache_size(&self, level: &str, size: u64) {
+        self.cache_size_bytes.with_label_values(&[level]).set(size as f64);
     }
 
     /// Export metrics in Prometheus format

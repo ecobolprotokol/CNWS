@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0.0",
+  "metadata": {
+    "version": "1.0.0",
+    "format_version": 1,
+    "created_at": 1786503974,
+    "updated_at": 1786503974,
+    "total_cells": 0,
+    "total_tiles": 0,
+    "total_size": 0,
+    "owner": "system",
+    "description": null,
+    "store_id": "cnws-efd99c3d-a9e4-4fe4-a3bc-49bc6cf2daba"
+  },
+  "architecture": {
+    "model_family": null,
+    "num_layers": null,
+    "hidden_dim": null,
+    "num_heads": null,
+    "num_experts": null,
+    "vocab_size": null,
+    "max_seq_len": null
+  },
+  "cells": {},
+  "tiles": {},
+  "indices": {
+    "by_type": {},
+    "by_data_type": {},
+    "by_layer": {},
+    "by_name": {}
+  },
+  "dependency_graph": {
+    "edges": {}
+  },
+  "provenance": null,
+  "representations": {},
+  "segments": [],
+  "runtime_defaults": {
+    "max_compute": null,
+    "max_depth": null,
+    "selection_k": null,
+    "confidence_threshold": null
+  }
+}

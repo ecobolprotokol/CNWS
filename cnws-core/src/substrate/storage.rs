@@ -21,6 +21,11 @@ pub const SEGMENT_TYPE_INDEX: u32 = 0x02;
 pub const SEGMENT_TYPE_MEMORY: u32 = 0x03;
 pub const SEGMENT_TYPE_ROUTING: u32 = 0x04;
 
+/// Current supported store format version
+pub const CURRENT_VERSION: u32 = 1;
+/// Current supported store format major version
+pub const CURRENT_VERSION_MAJOR: u32 = 1;
+
 /// Superblock - fixed 4096-byte header at start of store
 ///
 /// Spec Ref: 04-cd-format-serialization.md §4.2
@@ -399,6 +404,14 @@ impl StorageEngine {
         file.read_exact(&mut buf)?;
         let superblock = Superblock::from_bytes(&buf)?;
 
+        // Version checking
+        if superblock.version > CURRENT_VERSION_MAJOR {
+            return Err(CnwsError::UnsupportedFormat(format!(
+                "Store version {} is newer than supported version {}",
+                superblock.version, CURRENT_VERSION_MAJOR
+            )));
+        }
+
         // Load tile registry from index
         let registry = Self::load_registry(store_path)?;
 
@@ -441,6 +454,11 @@ impl StorageEngine {
             tile_count: 0,
             size_limit: config.segment_size,
         }];
+
+        // Create initial MANIFEST.cd
+        let manifest = crate::substrate::manifest::Manifest::new("system".to_string());
+        let manifest_path = store_path.join("MANIFEST.cd");
+        manifest.save(&manifest_path)?;
 
         Ok(Self {
             config,

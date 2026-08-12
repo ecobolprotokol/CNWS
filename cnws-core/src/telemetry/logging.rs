@@ -182,7 +182,8 @@ where
 
 impl Default for CnwsLogger {
     fn default() -> Self {
-        Self::init().unwrap();
+        // Ignore errors if subscriber is already set (multi-init safety)
+        let _ = Self::init();
         Self { _private: () }
     }
 }

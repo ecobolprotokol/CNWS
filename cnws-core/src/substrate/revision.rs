@@ -330,6 +330,78 @@ impl RevisionManager {
     pub fn common_ancestor(&self, id1: RevisionId, id2: RevisionId) -> Option<RevisionId> {
         self.dag.read().common_ancestor(id1, id2)
     }
+
+    /// Perform a 3-way merge of two branches
+    pub fn merge(
+        &self,
+        branch_a: RevisionId,
+        branch_b: RevisionId,
+    ) -> Result<RevisionId> {
+        let _ancestor = self
+            .common_ancestor(branch_a, branch_b)
+            .ok_or_else(|| {
+                CnwsError::InvalidRevision("No common ancestor found for merge".into())
+            })?;
+
+        let rev_a = self
+            .get(&branch_a)
+            .ok_or(CnwsError::RevisionNotFound)?;
+        let rev_b = self
+            .get(&branch_b)
+            .ok_or(CnwsError::RevisionNotFound)?;
+
+        let mut merged_cells = rev_a.changed_cells.clone();
+        merged_cells.extend(rev_b.changed_cells.iter().cloned());
+
+        let mut merged_tiles = rev_a.changed_tiles.clone();
+        merged_tiles.extend(rev_b.changed_tiles.iter().cloned());
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&branch_a.0);
+        hasher.update(&branch_b.0);
+        for cell in &merged_cells {
+            hasher.update(&cell.0);
+        }
+        for tile in &merged_tiles {
+            hasher.update(&tile.0);
+        }
+        let hash_bytes: [u8; 32] = hasher.finalize().into();
+        let merge_id = Blake3Hash(hash_bytes);
+
+        let revision = Revision::new(
+            merge_id,
+            vec![branch_a, branch_b],
+            merged_cells,
+            merged_tiles,
+        );
+
+        {
+            let mut dag = self.dag.write();
+            dag.add(revision.clone())?;
+        }
+
+        {
+            let mut head = self.head.write();
+            *head = Some(merge_id);
+        }
+
+        self.save_revision(&revision)?;
+
+        Ok(merge_id)
+    }
+
+    /// Rollback head to a target revision without deleting any revisions
+    pub fn rollback(&self, target: RevisionId) -> Result<RevisionId> {
+        if !self.exists(&target) {
+            return Err(CnwsError::RevisionNotFound);
+        }
+
+        let old_head = self.head();
+        let mut head = self.head.write();
+        *head = Some(target);
+
+        Ok(old_head.unwrap_or(target))
+    }
 }
 
 #[cfg(test)]
@@ -380,5 +452,88 @@ mod tests {
 
         assert!(manager.exists(&id));
         assert_eq!(manager.head(), Some(id));
+    }
+
+    #[test]
+    fn test_revision_manager_merge() {
+        let dir = tempdir().unwrap();
+        let config = StoreConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let engine = StorageEngine::create_store(config).unwrap();
+        let engine = Arc::new(engine);
+        let manager = RevisionManager::new(engine);
+
+        let root = manager
+            .commit(None, vec![], vec![], HashMap::new())
+            .unwrap();
+
+        let cell_a = Blake3Hash([1u8; 32]);
+        let tile_a = Blake3Hash([2u8; 32]);
+        let branch_a = manager
+            .commit(
+                Some(root),
+                vec![cell_a],
+                vec![tile_a],
+                HashMap::new(),
+            )
+            .unwrap();
+
+        let cell_b = Blake3Hash([3u8; 32]);
+        let tile_b = Blake3Hash([4u8; 32]);
+        let branch_b = manager
+            .commit(
+                Some(root),
+                vec![cell_b],
+                vec![tile_b],
+                HashMap::new(),
+            )
+            .unwrap();
+
+        let merge_id = manager.merge(branch_a, branch_b).unwrap();
+
+        let merge_rev = manager.get(&merge_id).unwrap();
+        assert_eq!(merge_rev.parents, vec![branch_a, branch_b]);
+        assert_eq!(merge_rev.changed_cells.len(), 2);
+        assert_eq!(merge_rev.changed_tiles.len(), 2);
+        assert!(merge_rev.changed_cells.contains(&cell_a));
+        assert!(merge_rev.changed_cells.contains(&cell_b));
+        assert!(merge_rev.changed_tiles.contains(&tile_a));
+        assert!(merge_rev.changed_tiles.contains(&tile_b));
+        assert_eq!(manager.head(), Some(merge_id));
+    }
+
+    #[test]
+    fn test_revision_manager_rollback() {
+        let dir = tempdir().unwrap();
+        let config = StoreConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let engine = StorageEngine::create_store(config).unwrap();
+        let engine = Arc::new(engine);
+        let manager = RevisionManager::new(engine);
+
+        let rev1 = manager
+            .commit(None, vec![], vec![], HashMap::new())
+            .unwrap();
+        let rev2 = manager
+            .commit(
+                Some(rev1),
+                vec![Blake3Hash([10u8; 32])],
+                vec![],
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(manager.head(), Some(rev2));
+
+        let old_head = manager.rollback(rev1).unwrap();
+        assert_eq!(old_head, rev2);
+        assert_eq!(manager.head(), Some(rev1));
+        assert!(manager.exists(&rev2));
     }
 }

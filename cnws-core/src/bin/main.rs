@@ -3,7 +3,7 @@
 
 use clap::{Parser, Subcommand};
 use cnws_core::{
-    api::{memory, runtime, storage},
+    api::builder::CnwsBuilder,
     error::Result,
     telemetry::{CnwsLogger, CnwsMetrics},
 };
@@ -145,9 +145,6 @@ fn main() -> Result<()> {
         CnwsLogger::init()?;
     }
 
-    // Initialize metrics
-    let metrics = Arc::new(CnwsMetrics::new()?);
-
     match cli.command {
         Commands::Init { path, compression } => {
             cmd_init(&path, &compression)?;
@@ -173,11 +170,16 @@ fn main() -> Result<()> {
             cmd_query(&store_path, cells)?;
         }
         Commands::Metrics { format } => {
+            let metrics = Arc::new(CnwsMetrics::new()?);
             cmd_metrics(&metrics, &format)?;
         }
     }
 
     Ok(())
+}
+
+fn build_system(store_path: &PathBuf) -> Result<cnws_core::api::builder::CnwsSystem> {
+    CnwsBuilder::new(store_path).build()
 }
 
 fn cmd_init(path: &PathBuf, compression: &str) -> Result<()> {
@@ -195,29 +197,22 @@ fn cmd_init(path: &PathBuf, compression: &str) -> Result<()> {
         )),
     };
 
-    storage::StorageApi::create(path, comp)?;
+    CnwsBuilder::new(path)
+        .with_compression(comp)
+        .build()?;
+
     println!("Store initialized at: {}", path.display());
     Ok(())
 }
 
 fn cmd_import(store_path: &PathBuf, model_path: &PathBuf, format: &str) -> Result<()> {
-    use cnws_core::substrate::storage::{StorageEngine, StoreConfig};
-    use std::sync::Arc;
-
-    let config = StoreConfig {
-        path: store_path.clone(),
-        ..Default::default()
-    };
-
-    let engine = StorageEngine::open(config)?;
-    let engine = Arc::new(engine);
-    let pipeline = cnws_core::substrate::conversion::ConversionPipeline::new(engine);
+    let system = build_system(store_path)?;
 
     let report = match format.to_lowercase().as_str() {
-        "safetensors" => pipeline.import_safetensors(model_path)?,
-        "gguf" => pipeline.import_gguf(model_path)?,
-        "pytorch" => pipeline.import_pytorch(model_path)?,
-        "onnx" => pipeline.import_onnx(model_path)?,
+        "safetensors" => system.conversion_pipeline.import_safetensors(model_path)?,
+        "gguf" => system.conversion_pipeline.import_gguf(model_path)?,
+        "pytorch" => system.conversion_pipeline.import_pytorch(model_path)?,
+        "onnx" => system.conversion_pipeline.import_onnx(model_path)?,
         _ => return Err(cnws_core::error::CnwsError::UnsupportedFormat(format.to_string())),
     };
 
@@ -232,21 +227,11 @@ fn cmd_import(store_path: &PathBuf, model_path: &PathBuf, format: &str) -> Resul
 }
 
 fn cmd_diag(store_path: &PathBuf, command: DiagCommands) -> Result<()> {
-    use cnws_core::substrate::storage::{StorageEngine, StoreConfig};
-    use std::sync::Arc;
-
-    let config = StoreConfig {
-        path: store_path.clone(),
-        ..Default::default()
-    };
-
-    let engine = StorageEngine::open(config)?;
-    let engine = Arc::new(engine);
+    let system = build_system(store_path)?;
 
     match command {
         DiagCommands::Integrity => {
-            let verifier = cnws_core::substrate::integrity::IntegrityVerifier::new(engine);
-            let results = verifier.verify_all()?;
+            let results = system.verify_integrity()?;
 
             let passed = results.iter().filter(|r| r.passed).count();
             let failed = results.iter().filter(|r| !r.passed).count();
@@ -264,21 +249,21 @@ fn cmd_diag(store_path: &PathBuf, command: DiagCommands) -> Result<()> {
             }
         }
         DiagCommands::StoreStatus => {
-            let stats = engine.stats();
+            let stats = system.store_stats();
+            let sb = system.store.superblock();
             println!("Store status:");
             println!("  Total tiles: {}", stats.total_tiles);
             println!("  Total segments: {}", stats.total_segments);
             println!("  Total size: {} MB", stats.total_size / 1024 / 1024);
             println!("  Compressed size: {} MB", stats.compressed_size / 1024 / 1024);
+            println!("  Cell count: {}", sb.cell_count);
             println!("  Read count: {}", stats.read_count);
             println!("  Write count: {}", stats.write_count);
-            println!("  Cache hits: {}", stats.cache_hits);
-            println!("  Cache misses: {}", stats.cache_misses);
         }
         DiagCommands::Health => {
             println!("Store health: OK");
             println!("  Store path: {}", store_path.display());
-            println!("  Tiles: {}", engine.list_tiles().len());
+            println!("  Tiles: {}", system.store.list_tiles().len());
         }
     }
 
@@ -286,17 +271,7 @@ fn cmd_diag(store_path: &PathBuf, command: DiagCommands) -> Result<()> {
 }
 
 fn cmd_revision(store_path: &PathBuf, command: RevisionCommands) -> Result<()> {
-    use cnws_core::substrate::storage::{StorageEngine, StoreConfig};
-    use std::sync::Arc;
-
-    let config = StoreConfig {
-        path: store_path.clone(),
-        ..Default::default()
-    };
-
-    let engine = StorageEngine::open(config)?;
-    let engine = Arc::new(engine);
-    let manager = Arc::new(cnws_core::substrate::revision::RevisionManager::new(engine));
+    let system = build_system(store_path)?;
 
     match command {
         RevisionCommands::Commit { parent, cells, tiles } => {
@@ -335,11 +310,11 @@ fn cmd_revision(store_path: &PathBuf, command: RevisionCommands) -> Result<()> {
                 })
                 .collect::<Vec<_>>();
 
-            let id = manager.commit(parent_hash, cell_hashes, tile_hashes, std::collections::HashMap::new())?;
+            let id = system.revision_manager.commit(parent_hash, cell_hashes, tile_hashes, std::collections::HashMap::new())?;
             println!("Revision committed: {:x}", id);
         }
         RevisionCommands::Log { revision: _ } => {
-            let dag = manager.dag();
+            let dag = system.revision_manager.dag();
             let dag = dag.read();
 
             println!("Revision history:");
@@ -360,18 +335,8 @@ fn cmd_revision(store_path: &PathBuf, command: RevisionCommands) -> Result<()> {
 }
 
 fn cmd_memory(store_path: &PathBuf, command: MemoryCommands) -> Result<()> {
-    use cnws_core::substrate::storage::{StorageEngine, StoreConfig};
-    use std::sync::Arc;
-
-    let config = StoreConfig {
-        path: store_path.clone(),
-        ..Default::default()
-    };
-
-    let engine = StorageEngine::open(config)?;
-    let engine = Arc::new(engine);
-    let system = Arc::new(cnws_core::lattice::memory::MemorySystem::new(engine, None));
-    let api = memory::MemoryApi::new(system);
+    let system = build_system(store_path)?;
+    let api = cnws_core::api::memory::MemoryApi::new(system.memory);
 
     match command {
         MemoryCommands::Write { memory_type, key, value, tags } => {
@@ -418,34 +383,7 @@ fn cmd_memory(store_path: &PathBuf, command: MemoryCommands) -> Result<()> {
 }
 
 fn cmd_query(store_path: &PathBuf, cells: Vec<String>) -> Result<()> {
-    use cnws_core::substrate::storage::{StorageEngine, StoreConfig};
-    use std::sync::Arc;
-
-    let config = StoreConfig {
-        path: store_path.clone(),
-        ..Default::default()
-    };
-
-    let engine = StorageEngine::open(config)?;
-    let engine = Arc::new(engine);
-
-    let resolver = Arc::new(cnws_core::lattice::runtime::MockResolver::new());
-    let cache = Arc::new(cnws_core::lattice::cache::CacheManager::new());
-    let memory = Arc::new(cnws_core::lattice::memory::MemorySystem::new(Arc::clone(&engine), None));
-    let routing = Arc::new(cnws_core::lattice::routing::RoutingEngine::new(
-        cnws_core::lattice::routing::RoutingPolicy::Auto
-    ));
-
-    let exec_engine = Arc::new(cnws_core::lattice::runtime::ExecutionEngine::new(
-        engine,
-        resolver,
-        cache,
-        memory,
-        routing,
-        cnws_core::types::ComputeBudget::default(),
-    ));
-
-    let api = runtime::RuntimeApi::new(exec_engine);
+    let system = build_system(store_path)?;
 
     let cell_hashes = cells.iter().filter_map(|c| hex::decode(c).ok())
         .filter_map(|b| {
@@ -459,10 +397,11 @@ fn cmd_query(store_path: &PathBuf, cells: Vec<String>) -> Result<()> {
         })
         .collect::<Vec<_>>();
 
-    let query = runtime::QueryBuilder::new()
+    let query = cnws_core::api::runtime::QueryBuilder::new()
         .with_entry_cells(cell_hashes)
         .build();
 
+    let api = cnws_core::api::runtime::RuntimeApi::new(system.execution_engine);
     let rt = tokio::runtime::Runtime::new()?;
     let state = rt.block_on(api.execute(&query))?;
 
@@ -481,8 +420,8 @@ fn cmd_metrics(metrics: &CnwsMetrics, format: &str) -> Result<()> {
             println!("{}", text);
         }
         "json" => {
-            let stats = metrics.export()?;
-            println!("{}", stats);
+            let text = metrics.export()?;
+            println!("{}", text);
         }
         _ => {
             eprintln!("Unknown format: {}", format);
