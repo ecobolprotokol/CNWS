@@ -223,11 +223,12 @@ impl LearningEngine {
 
         for (_key, (cells, frequency)) in pattern_map {
             if frequency >= 2 {
-                let pattern = CompositionPattern::new(
+                let mut pattern = CompositionPattern::new(
                     format!("pattern_{}", patterns.len()),
                     format!("Pattern {}", patterns.len()),
                     cells,
                 );
+                pattern.frequency = frequency;
                 patterns.push(pattern);
             }
         }
