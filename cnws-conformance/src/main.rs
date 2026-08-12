@@ -6,7 +6,6 @@ use cnws_core::{
     error::Result,
     substrate::{
         conversion::ConversionPipeline,
-        gc::GarbageCollector,
         integrity::IntegrityVerifier,
         recovery::RecoveryManager,
         revision::RevisionManager,
@@ -37,7 +36,7 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let _cli = Cli::parse();
 
     println!("CNWS Conformance Test Runner");
     println!("============================\n");
@@ -218,37 +217,48 @@ fn run_cs01() -> Result<()> {
 
 /// CS-02: Cell Schema Conformance
 fn run_cs02() -> Result<()> {
-    // Test all cell types
+    // Test all 57 cell types from spec §3
     let cell_types = vec![
-        CellType::Tensor,
-        CellType::Attention,
-        CellType::FFN,
-        CellType::LayerNorm,
-        CellType::Embedding,
-        CellType::Loss,
-        CellType::OptimizerState,
-        CellType::Gradient,
-        CellType::Activation,
-        CellType::Weight,
-        CellType::Bias,
-        CellType::Mask,
-        CellType::PositionalEncoding,
-        CellType::KV,
-        CellType::Projection,
-        CellType::Residual,
-        CellType::Dropout,
-        CellType::Scale,
-        CellType::Shift,
-        CellType::Gate,
-        CellType::Merge,
-        CellType::Split,
+        // Weight cells (0x01-0x1F)
+        CellType::Embedding, CellType::AttentionQProj, CellType::AttentionKProj,
+        CellType::AttentionVProj, CellType::AttentionOut,
+        CellType::MlpGate, CellType::MlpUp, CellType::MlpDown,
+        CellType::ExpertGate, CellType::ExpertRoute, CellType::ExpertWeight,
+        CellType::LayerNormWeight, CellType::LayerNormBias, CellType::LmHead,
+        CellType::VisionEncoder, CellType::ConvWeight,
+        CellType::NormScale, CellType::NormBias, CellType::Positional, CellType::ResidualGate,
+        // Memory cells (0x20-0x2F)
+        CellType::MemoryEpisodic, CellType::MemorySemantic, CellType::MemoryProcedural,
+        CellType::MemoryWorking, CellType::MemoryConsolidated, CellType::MemoryAssociation,
+        // Routing cells (0x30-0x3F)
+        CellType::RoutingPolicy, CellType::RoutingStatistics, CellType::RoutingIndex,
+        CellType::RoutingAssociation, CellType::RoutingThreshold,
+        // Composition cells (0x40-0x4F)
+        CellType::CompositionPattern, CellType::CompositionTemplate, CellType::CompositionMacro,
+        CellType::CompositionSequence, CellType::CompositionParallel,
+        CellType::CompositionConditional, CellType::CompositionIterative,
+        // Computation cells (0x50-0x5F)
+        CellType::TransformModule, CellType::EncodeModule, CellType::DecodeModule,
+        CellType::NormalizeModule, CellType::ActivationModule, CellType::PoolingModule,
+        CellType::AttentionModule, CellType::ConvolutionModule, CellType::RecurrentModule,
+        // Control cells (0x60-0x6F)
+        CellType::HaltCondition, CellType::BudgetPolicy, CellType::BranchCondition,
+        CellType::LoopControl, CellType::ErrorHandler,
+        // Meta cells (0x70-0x7F)
+        CellType::Provenance, CellType::Configuration, CellType::Statistics,
+        CellType::Annotation, CellType::Validation,
+        // Custom (0xFF)
         CellType::Custom,
     ];
 
-    for cell_type in cell_types {
-        // Each cell type should have a unique discriminant
-        let _ = cell_type;
+    // Verify all 57 cell types have unique discriminants
+    let mut discriminants = std::collections::HashSet::new();
+    for cell_type in &cell_types {
+        let disc = u8::from(*cell_type);
+        assert!(discriminants.insert(disc),
+            "Duplicate discriminant 0x{:02x} for {:?}", disc, cell_type);
     }
+    assert_eq!(discriminants.len(), 57, "Expected 57 unique cell types");
 
     // Test data types
     let data_types = vec![
@@ -282,7 +292,7 @@ fn run_cs03() -> Result<()> {
         ..Default::default()
     };
 
-    let engine = StorageEngine::create_store(config)?;
+    let _engine = StorageEngine::create_store(config)?;
 
     // Verify SUPERBLOCK
     let superblock_path = dir.path().join("SUPERBLOCK");

@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand};
 use cnws_core::{
-    api::{self, admin, conversion, memory, revision, runtime, storage},
+    api::{memory, runtime, storage},
     error::Result,
     telemetry::{CnwsLogger, CnwsMetrics},
 };
@@ -336,7 +336,7 @@ fn cmd_revision(store_path: &PathBuf, command: RevisionCommands) -> Result<()> {
             let id = manager.commit(parent_hash, cell_hashes, tile_hashes, std::collections::HashMap::new())?;
             println!("Revision committed: {:x}", id);
         }
-        RevisionCommands::Log { revision } => {
+        RevisionCommands::Log { revision: _ } => {
             let dag = manager.dag();
             let dag = dag.read();
 

@@ -483,6 +483,11 @@ impl StorageEngine {
         self.registry.read().get(hash).cloned()
     }
 
+    /// Get the superblock
+    pub fn superblock(&self) -> Superblock {
+        self.superblock.read().clone()
+    }
+
     /// Check if tile exists
     pub fn has_tile(&self, hash: &Blake3Hash) -> bool {
         self.registry.read().get(hash).is_some()

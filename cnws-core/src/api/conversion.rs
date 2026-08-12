@@ -64,7 +64,7 @@ mod tests {
 
         let engine = StorageEngine::create_store(config).unwrap();
         let pipeline = ConversionPipeline::new(std::sync::Arc::new(engine));
-        let api = ConversionApi::new(pipeline);
+        let _api = ConversionApi::new(pipeline);
 
         // Test would require actual model files
         assert!(true);

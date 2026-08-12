@@ -128,21 +128,11 @@ impl GarbageCollector {
 
         Ok(reachable)
     }
-
-    /// Sweep phase - remove unreachable tiles
-    fn sweep_phase(&self, unreachable: &[Blake3Hash]) -> Result<()> {
-        for tile_hash in unreachable {
-            self.store.delete_tile(tile_hash)?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::substrate::storage::{StorageEngine, StoreConfig};
-    use tempfile::tempdir;
 
     #[test]
     fn test_gc_report_default() {

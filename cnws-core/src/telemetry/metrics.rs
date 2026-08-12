@@ -31,11 +31,15 @@ pub struct CnwsMetrics {
     // Cache metrics
     cache_hits_total: Counter,
     cache_misses_total: Counter,
+    #[allow(dead_code)]
     cache_size_bytes: GaugeVec,
 
     // Memory metrics
+    #[allow(dead_code)]
     memory_entries_total: GaugeVec,
+    #[allow(dead_code)]
     memory_reads_total: CounterVec,
+    #[allow(dead_code)]
     memory_writes_total: CounterVec,
 
     // Revision metrics

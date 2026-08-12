@@ -297,8 +297,6 @@ impl RecoveryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::substrate::storage::{StorageEngine, StoreConfig};
-    use tempfile::tempdir;
 
     #[test]
     fn test_wal_record_serialization() {

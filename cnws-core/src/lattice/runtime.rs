@@ -124,10 +124,13 @@ impl RuntimeResolver for MockResolver {
 
 /// Execution engine
 pub struct ExecutionEngine {
+    #[allow(dead_code)]
     store: Arc<StorageEngine>,
     resolver: Arc<dyn RuntimeResolver>,
     cache: Arc<CacheManager>,
+    #[allow(dead_code)]
     memory: Arc<MemorySystem>,
+    #[allow(dead_code)]
     routing: Arc<RoutingEngine>,
     budget: ComputeBudget,
 }
@@ -236,7 +239,7 @@ mod tests {
     async fn test_mock_resolver() {
         let mut resolver = MockResolver::new();
         let hash = Blake3Hash::hash(b"test");
-        let cell = CellRef::new(hash, CellType::Tensor);
+        let cell = CellRef::new(hash, CellType::Embedding);
         resolver.add_cell(cell);
 
         let resolved = resolver.resolve_cell(&hash).await.unwrap();
