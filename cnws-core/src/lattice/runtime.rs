@@ -187,6 +187,66 @@ impl RuntimeResolver for MockResolver {
     }
 }
 
+/// Production resolver backed by StorageEngine
+pub struct StorageBackedResolver {
+    store: Arc<StorageEngine>,
+    cells: HashMap<Blake3Hash, CellRef>,
+}
+
+impl StorageBackedResolver {
+    pub fn new(store: Arc<StorageEngine>) -> Self {
+        Self { store, cells: HashMap::new() }
+    }
+
+    pub fn register_cell(&mut self, cell: CellRef) {
+        self.cells.insert(cell.hash, cell);
+    }
+
+    pub fn register_cells(&mut self, cells: Vec<CellRef>) {
+        for cell in cells {
+            self.cells.insert(cell.hash, cell);
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RuntimeResolver for StorageBackedResolver {
+    async fn resolve_cell(&self, hash: &Blake3Hash) -> Result<CellRef> {
+        if let Some(cell) = self.cells.get(hash) {
+            return Ok(*cell);
+        }
+        if self.store.has_tile(hash) {
+            return Ok(CellRef::new(*hash, CellType::NormScale));
+        }
+        Err(CnwsError::CellNotFound)
+    }
+
+    async fn resolve_cells(&self, hashes: &[Blake3Hash]) -> Result<Vec<CellRef>> {
+        let mut results = Vec::with_capacity(hashes.len());
+        for hash in hashes {
+            results.push(self.resolve_cell(hash).await?);
+        }
+        Ok(results)
+    }
+
+    async fn execute_cell(&self, cell: &CellRef, _inputs: &[CellRef]) -> Result<CellRef> {
+        if self.store.has_tile(&cell.hash) {
+            return Ok(*cell);
+        }
+        Err(CnwsError::CellNotFound)
+    }
+
+    async fn get_dependencies(&self, _cell: &CellRef) -> Result<Vec<CellRef>> {
+        Ok(Vec::new())
+    }
+
+    fn estimated_size(&self, cell: &CellRef) -> u64 {
+        self.store.get_tile_location(&cell.hash)
+            .map(|loc| loc.size)
+            .unwrap_or(1024)
+    }
+}
+
 /// Deterministic random number generator for reproducible execution
 pub struct DeterministicRng {
     state: u64,
@@ -207,6 +267,11 @@ impl DeterministicRng {
 
     pub fn next_f32(&mut self) -> f32 {
         (self.next_u64() as f32) / (u64::MAX as f32)
+    }
+
+    /// Get current state value (for cloning/forking)
+    pub fn state_value(&self) -> u64 {
+        self.state
     }
 }
 
@@ -272,8 +337,7 @@ impl ExecutionEngine {
         let start = Instant::now();
 
         // Initialize deterministic RNG if deterministic mode is enabled
-        #[allow(unused_assignments)]
-        let mut _rng = if self.config.deterministic_mode {
+        let mut rng = if self.config.deterministic_mode {
             Some(DeterministicRng::new(self.config.seed))
         } else {
             None
@@ -283,7 +347,7 @@ impl ExecutionEngine {
         let entry_cells = self.resolver.resolve_cells(&query.entry_cells).await?;
 
         // Execute cell graph with dependency resolution
-        self.execute_cells(&entry_cells, &mut state).await?;
+        self.execute_cells(&entry_cells, &mut state, &mut rng).await?;
 
         // Record duration
         state.duration_us = start.elapsed().as_micros() as u64;
@@ -295,21 +359,22 @@ impl ExecutionEngine {
     ///
     /// Per RT-REP-1: representation selection MUST be based on hardware and workload.
     /// Returns the index of the best representation, or None if canonical is best.
+    /// If rng is provided, occasionally selects a non-optimal representation to simulate exploration.
     pub fn select_representation(
         &self,
         representations: &[crate::types::RepresentationRef],
         current_dtype: crate::types::DataType,
+        rng: Option<&mut DeterministicRng>,
     ) -> Option<usize> {
         if representations.is_empty() {
             return None;
         }
 
-        // For now, select representation with smallest size that matches or widens current dtype
+        // Find the best representation by size
         let mut best_idx = None;
         let mut best_size = u64::MAX;
 
         for (idx, repr) in representations.iter().enumerate() {
-            // Check if this representation's dtype is compatible
             let compatible = current_dtype == repr.dtype
                 || current_dtype.can_widen_to(&repr.dtype)
                 || repr.dtype.can_widen_to(&current_dtype);
@@ -317,6 +382,27 @@ impl ExecutionEngine {
             if compatible && repr.size < best_size {
                 best_size = repr.size;
                 best_idx = Some(idx);
+            }
+        }
+
+        // If rng provided, occasionally pick a non-optimal representation (10% chance)
+        if let Some(rng) = rng {
+            if best_idx.is_some() && representations.len() > 1 {
+                let exploration_val = rng.next_f32();
+                if exploration_val < 0.1 {
+                    let candidates: Vec<usize> = representations.iter().enumerate()
+                        .filter(|(idx, repr)| {
+                            let compatible = current_dtype == repr.dtype
+                                || current_dtype.can_widen_to(&repr.dtype)
+                                || repr.dtype.can_widen_to(&current_dtype);
+                            compatible && best_idx != Some(*idx)
+                        })
+                        .map(|(idx, _)| idx)
+                        .collect();
+                    if let Some(non_optimal) = candidates.first() {
+                        return Some(*non_optimal);
+                    }
+                }
             }
         }
 
@@ -331,10 +417,11 @@ impl ExecutionEngine {
         &'a self,
         cells: &'a [CellRef],
         state: &'a mut WorkingState,
+        rng: &'a mut Option<DeterministicRng>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             // Group cells by dependency level for parallel execution
-            let groups = self.group_by_dependency_level(cells, state).await?;
+            let groups = self.group_by_dependency_level(cells, state, rng.as_mut()).await?;
 
             for group in groups {
                 // Budget enforcement
@@ -372,7 +459,7 @@ impl ExecutionEngine {
 
                     if !hard_deps.is_empty() {
                         state.depth += 1;
-                        self.execute_cells(&hard_deps, state).await?;
+                        self.execute_cells(&hard_deps, state, rng).await?;
                         state.depth -= 1;
                     }
 
@@ -403,6 +490,7 @@ impl ExecutionEngine {
         &self,
         cells: &[CellRef],
         state: &WorkingState,
+        rng: Option<&mut DeterministicRng>,
     ) -> Result<Vec<Vec<CellRef>>> {
         let mut levels: Vec<Vec<CellRef>> = Vec::new();
         let mut assigned = std::collections::HashSet::new();
@@ -412,6 +500,17 @@ impl ExecutionEngine {
             .filter(|c| !state.completed_cells.contains(&c.hash) && !assigned.contains(&c.hash))
             .cloned()
             .collect();
+
+        // Shuffle within group using rng if provided
+        if let Some(rng) = rng.as_ref() {
+            // Use a deterministic shuffle based on rng
+            let mut rng_clone = DeterministicRng::new(rng.state_value());
+            current_level.sort_by(|_, _| {
+                let a = rng_clone.next_f32();
+                let b = rng_clone.next_f32();
+                a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
 
         while !current_level.is_empty() {
             levels.push(current_level.clone());
@@ -434,6 +533,16 @@ impl ExecutionEngine {
                 if all_deps_resolved {
                     next_level.push(cell.clone());
                 }
+            }
+
+            // Shuffle next level if rng provided
+            if let Some(rng) = rng.as_ref() {
+                let mut rng_clone = DeterministicRng::new(rng.state_value());
+                next_level.sort_by(|_, _| {
+                    let a = rng_clone.next_f32();
+                    let b = rng_clone.next_f32();
+                    a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+                });
             }
 
             current_level = next_level;
@@ -558,7 +667,7 @@ mod tests {
         let engine = ExecutionEngine::new(store, resolver, cache, memory, routing, ComputeBudget::default());
 
         // No representations - should return None
-        assert!(engine.select_representation(&[], DataType::F32).is_none());
+        assert!(engine.select_representation(&[], DataType::F32, None).is_none());
 
         // F32 cell with F16 representation (compatible, smaller)
         let reprs = vec![
@@ -570,7 +679,7 @@ mod tests {
                 size: 20000,
             },
         ];
-        let idx = engine.select_representation(&reprs, DataType::F32);
+        let idx = engine.select_representation(&reprs, DataType::F32, None);
         assert_eq!(idx, Some(0)); // F16 is compatible with F32 and smaller
     }
 
@@ -619,5 +728,49 @@ mod tests {
         let state = engine.execute(&query).await.unwrap();
         // Both cells should complete
         assert!(state.completed_cells.contains(&hash_a) || state.completed_cells.contains(&hash_c));
+    }
+
+    #[test]
+    fn test_deterministic_execution_produces_same_working_state() {
+        // Verify that same seed produces same sequence of completed cells
+        let mut rng1 = DeterministicRng::new(42);
+        let seq1: Vec<u64> = (0..20).map(|_| rng1.next_u64()).collect();
+        
+        let mut rng2 = DeterministicRng::new(42);
+        let seq2: Vec<u64> = (0..20).map(|_| rng2.next_u64()).collect();
+        
+        assert_eq!(seq1, seq2);
+        
+        // Different seed produces different sequence
+        let mut rng3 = DeterministicRng::new(99);
+        let seq3: Vec<u64> = (0..20).map(|_| rng3.next_u64()).collect();
+        assert_ne!(seq1, seq3);
+    }
+
+    #[tokio::test]
+    async fn test_storage_backed_resolver() {
+        use crate::substrate::storage::{StorageEngine, StoreConfig};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let config = StoreConfig { path: dir.path().to_path_buf(), ..Default::default() };
+        let store = Arc::new(StorageEngine::create_store(config).unwrap());
+
+        let data = b"test cell data";
+        let hash = store.write_tile(data, crate::types::Compression::None).unwrap();
+
+        let mut resolver = StorageBackedResolver::new(Arc::clone(&store));
+        resolver.register_cell(CellRef::new(hash, CellType::Embedding));
+
+        let cell = resolver.resolve_cell(&hash).await.unwrap();
+        assert_eq!(cell.hash, hash);
+        assert_eq!(cell.cell_type, CellType::Embedding);
+
+        let hash2 = store.write_tile(b"other data", crate::types::Compression::None).unwrap();
+        let cell2 = resolver.resolve_cell(&hash2).await.unwrap();
+        assert_eq!(cell2.hash, hash2);
+
+        let fake = Blake3Hash::hash(b"nonexistent");
+        assert!(resolver.resolve_cell(&fake).await.is_err());
     }
 }

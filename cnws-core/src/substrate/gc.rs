@@ -8,7 +8,7 @@
 use super::revision::RevisionManager;
 use super::storage::StorageEngine;
 use crate::error::Result;
-use crate::types::{Blake3Hash, TILE_SIZE};
+use crate::types::Blake3Hash;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -92,10 +92,11 @@ impl GarbageCollector {
         // Phase 3: Sweep - remove unreachable tiles
         if !dry_run {
             for tile_hash in &unreachable {
+                let tile_size = self.store.registry().read().get(tile_hash).map(|loc| loc.size).unwrap_or(0);
                 match self.store.delete_tile(tile_hash) {
                     Ok(_) => {
                         report.freed_tiles += 1;
-                        report.bytes_freed += TILE_SIZE as u64;
+                        report.bytes_freed += tile_size;
                     }
                     Err(e) => {
                         report.errors.push(format!(
@@ -134,8 +135,15 @@ impl GarbageCollector {
                 // Mark tiles from changed cells (cells may reference tiles)
                 for &cell_hash in &revision.changed_cells {
                     reachable.insert(cell_hash);
-                    // In a full implementation, we would load the cell data
-                    // and extract tile references transitively
+                    if let Ok(data) = self.store.read_tile(&cell_hash) {
+                        if data.len() >= 32 {
+                            for chunk in data.chunks_exact(32) {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(chunk);
+                                reachable.insert(Blake3Hash(arr));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -157,11 +165,41 @@ impl GarbageCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    
 
     #[test]
     fn test_gc_report_default() {
         let report = GcReport::default();
         assert_eq!(report.total_tiles_before, 0);
         assert_eq!(report.freed_tiles, 0);
+    }
+
+    #[test]
+    fn test_gc_reaches_all_registered_tiles() {
+        use crate::substrate::storage::{StorageEngine, StoreConfig};
+        use crate::substrate::revision::RevisionManager;
+        use std::collections::HashMap;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let config = StoreConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let engine = Arc::new(StorageEngine::create_store(config).unwrap());
+        let revision_mgr = Arc::new(RevisionManager::new(Arc::clone(&engine)));
+
+        // Write tiles
+        let data = b"test data";
+        let hash = engine.write_tile(data, crate::types::Compression::None).unwrap();
+
+        // Commit revision referencing the tile
+        revision_mgr.commit(None, vec![], vec![hash], HashMap::new()).unwrap();
+
+        // Run GC - should NOT free the tile
+        let gc = GarbageCollector::new(engine, revision_mgr);
+        let report = gc.run(false).unwrap();
+
+        assert_eq!(report.freed_tiles, 0, "GC should not free tiles referenced by revisions");
     }
 }

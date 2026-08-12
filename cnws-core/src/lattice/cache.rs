@@ -129,7 +129,7 @@ impl LruCache {
     }
 
     /// Evict least recently used entry
-    fn evict_lru(&mut self) {
+    pub fn evict_lru(&mut self) {
         if let Some((&hash, _)) = self.entries.iter()
             .min_by_key(|(_, entry)| entry.last_accessed)
         {
@@ -286,22 +286,30 @@ impl CacheManager {
 
     /// Promote entry to higher level
     pub fn promote(&self, hash: Blake3Hash, from: CacheLevel, to: CacheLevel) -> Result<()> {
-        if let Some(data) = self.get(&hash, from) {
-            self.insert(hash, data, to);
-            Ok(())
-        } else {
-            Err(CnwsError::CacheMiss)
-        }
+        let data = match self.get(&hash, from) {
+            Some(d) => d,
+            None => return Err(CnwsError::CacheMiss),
+        };
+        self.insert(hash, data, to);
+        self.cache_for_level(from).write().remove(&hash);
+        Ok(())
     }
 
     /// Demote entry to lower level
     pub fn demote(&self, hash: Blake3Hash, from: CacheLevel, to: CacheLevel) -> Result<()> {
-        if let Some(data) = self.get(&hash, from) {
-            self.insert(hash, data, to);
-            Ok(())
-        } else {
-            Err(CnwsError::CacheMiss)
+        let data = match self.get(&hash, from) {
+            Some(d) => d,
+            None => return Err(CnwsError::CacheMiss),
+        };
+        {
+            let mut target = self.cache_for_level(to).write();
+            if target.current_size() + data.len() > target.capacity() {
+                target.evict_lru();
+            }
         }
+        self.insert(hash, data, to);
+        self.cache_for_level(from).write().remove(&hash);
+        Ok(())
     }
 }
 

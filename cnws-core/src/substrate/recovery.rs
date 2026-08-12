@@ -366,6 +366,43 @@ impl RecoveryManager {
                 WalRecordType::Checkpoint => {
                     // Checkpoint marker
                 }
+                WalRecordType::StageManifest => {
+                    report.warnings.push(format!(
+                        "StageManifest replayed (txn={}, data_len={})",
+                        record.txn_id,
+                        record.data.len()
+                    ));
+                }
+                WalRecordType::UpdateSuperblock => {
+                    report.warnings.push(format!(
+                        "UpdateSuperblock replayed (superblock managed by StorageEngine)"
+                    ));
+                }
+                WalRecordType::BeginConversion => {
+                    report.warnings.push(format!(
+                        "BeginConversion replayed (txn={})",
+                        record.txn_id
+                    ));
+                }
+                WalRecordType::ConversionProgress => {
+                    report.warnings.push(format!(
+                        "ConversionProgress replayed (txn={}, data_len={})",
+                        record.txn_id,
+                        record.data.len()
+                    ));
+                }
+                WalRecordType::ConversionComplete => {
+                    report.warnings.push(format!(
+                        "ConversionComplete replayed (txn={})",
+                        record.txn_id
+                    ));
+                }
+                WalRecordType::Rollback => {
+                    report.warnings.push(format!(
+                        "Rollback marker replayed (txn={})",
+                        record.txn_id
+                    ));
+                }
                 _ => {}
             }
         }

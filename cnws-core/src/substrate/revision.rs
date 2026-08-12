@@ -211,6 +211,15 @@ impl RevisionDag {
     }
 }
 
+/// Conflict information from a 3-way merge
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeConflict {
+    pub cell_hash: Blake3Hash,
+    pub branch_a_version: Option<Blake3Hash>,
+    pub branch_b_version: Option<Blake3Hash>,
+    pub ancestor_version: Option<Blake3Hash>,
+}
+
 /// Revision manager - manages revisions and their storage
 pub struct RevisionManager {
     store: Arc<StorageEngine>,
@@ -221,16 +230,58 @@ pub struct RevisionManager {
 impl RevisionManager {
     /// Create a new revision manager
     pub fn new(store: Arc<StorageEngine>) -> Self {
-        Self {
+        let manager = Self {
             store,
             dag: Arc::new(RwLock::new(RevisionDag::new())),
             head: Arc::new(RwLock::new(None)),
-        }
+        };
+        let _ = manager.load();
+        manager
+    }
+
+    /// Get the revisions directory path
+    fn revisions_dir(&self) -> std::path::PathBuf {
+        self.store.config.path.join("revisions")
     }
 
     /// Load revisions from store
     pub fn load(&self) -> Result<()> {
-        // In real implementation, would load from revisions directory
+        let revisions_dir = self.revisions_dir();
+        if !revisions_dir.exists() {
+            return Ok(());
+        }
+
+        let mut latest_timestamp = 0u64;
+        let mut latest_id: Option<RevisionId> = None;
+
+        let entries: Vec<_> = std::fs::read_dir(&revisions_dir)
+            .map_err(|e| CnwsError::Io(e))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "rev").unwrap_or(false))
+            .collect();
+
+        for entry in entries {
+            let path = entry.path();
+            match std::fs::read(&path) {
+                Ok(data) => {
+                    if let Ok(revision) = bincode::deserialize::<Revision>(&data) {
+                        if revision.timestamp > latest_timestamp {
+                            latest_timestamp = revision.timestamp;
+                            latest_id = Some(revision.id);
+                        }
+                        let mut dag = self.dag.write();
+                        let _ = dag.add(revision);
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+
+        if let Some(id) = latest_id {
+            let mut head = self.head.write();
+            *head = Some(id);
+        }
+
         Ok(())
     }
 
@@ -291,12 +342,11 @@ impl RevisionManager {
         let data = bincode::serialize(revision)
             .map_err(|e| CnwsError::Serialization(e.to_string()))?;
 
-        let hash = Blake3Hash::hash(&data);
         let store_path = &self.store.config.path;
         let revisions_path = store_path.join("revisions");
 
         std::fs::create_dir_all(&revisions_path)?;
-        std::fs::write(revisions_path.join(format!("{:x}.cd", hash)), data)?;
+        std::fs::write(revisions_path.join(format!("{:x}.rev", revision.id)), data)?;
 
         Ok(())
     }
@@ -336,58 +386,75 @@ impl RevisionManager {
         &self,
         branch_a: RevisionId,
         branch_b: RevisionId,
-    ) -> Result<RevisionId> {
-        let _ancestor = self
+    ) -> std::result::Result<std::result::Result<RevisionId, Vec<MergeConflict>>, CnwsError> {
+        let ancestor_id = self
             .common_ancestor(branch_a, branch_b)
             .ok_or_else(|| {
                 CnwsError::InvalidRevision("No common ancestor found for merge".into())
             })?;
 
-        let rev_a = self
-            .get(&branch_a)
-            .ok_or(CnwsError::RevisionNotFound)?;
-        let rev_b = self
-            .get(&branch_b)
-            .ok_or(CnwsError::RevisionNotFound)?;
+        let rev_a = self.get(&branch_a).ok_or(CnwsError::RevisionNotFound)?;
+        let rev_b = self.get(&branch_b).ok_or(CnwsError::RevisionNotFound)?;
+        let ancestor = self.get(&ancestor_id).ok_or(CnwsError::RevisionNotFound)?;
 
-        let mut merged_cells = rev_a.changed_cells.clone();
-        merged_cells.extend(rev_b.changed_cells.iter().cloned());
+        let ancestor_cells: HashSet<Blake3Hash> = ancestor.changed_cells.iter().cloned().collect();
+        let a_only: Vec<Blake3Hash> = rev_a.changed_cells.iter()
+            .filter(|c| !ancestor_cells.contains(c))
+            .cloned().collect();
+        let b_only: Vec<Blake3Hash> = rev_b.changed_cells.iter()
+            .filter(|c| !ancestor_cells.contains(c))
+            .cloned().collect();
 
-        let mut merged_tiles = rev_a.changed_tiles.clone();
-        merged_tiles.extend(rev_b.changed_tiles.iter().cloned());
+        let a_set: HashSet<Blake3Hash> = a_only.iter().cloned().collect();
+        let b_set: HashSet<Blake3Hash> = b_only.iter().cloned().collect();
+        let conflicts: Vec<MergeConflict> = a_set.intersection(&b_set)
+            .map(|&cell| MergeConflict {
+                cell_hash: cell,
+                branch_a_version: Some(cell),
+                branch_b_version: Some(cell),
+                ancestor_version: if ancestor_cells.contains(&cell) { Some(cell) } else { None },
+            })
+            .collect();
+
+        if !conflicts.is_empty() {
+            return Ok(Err(conflicts));
+        }
+
+        let mut merged_cells: Vec<Blake3Hash> = ancestor.changed_cells.iter().cloned().collect();
+        merged_cells.extend(a_only);
+        merged_cells.extend(b_only);
+
+        let ancestor_tiles: HashSet<Blake3Hash> = ancestor.changed_tiles.iter().cloned().collect();
+        let mut merged_tiles: Vec<Blake3Hash> = rev_a.changed_tiles.iter()
+            .filter(|t| !ancestor_tiles.contains(t))
+            .cloned().collect();
+        let b_tiles: Vec<Blake3Hash> = rev_b.changed_tiles.iter()
+            .filter(|t| !ancestor_tiles.contains(t))
+            .cloned().collect();
+        merged_tiles.extend(b_tiles);
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(&branch_a.0);
         hasher.update(&branch_b.0);
-        for cell in &merged_cells {
-            hasher.update(&cell.0);
-        }
-        for tile in &merged_tiles {
-            hasher.update(&tile.0);
-        }
+        for cell in &merged_cells { hasher.update(&cell.0); }
+        for tile in &merged_tiles { hasher.update(&tile.0); }
         let hash_bytes: [u8; 32] = hasher.finalize().into();
         let merge_id = Blake3Hash(hash_bytes);
 
-        let revision = Revision::new(
-            merge_id,
-            vec![branch_a, branch_b],
-            merged_cells,
-            merged_tiles,
-        );
+        let mut revision = Revision::new(merge_id, vec![branch_a, branch_b], merged_cells, merged_tiles);
+        revision = revision.with_metadata("merge_type", "three_way");
 
         {
             let mut dag = self.dag.write();
             dag.add(revision.clone())?;
         }
-
         {
             let mut head = self.head.write();
             *head = Some(merge_id);
         }
-
         self.save_revision(&revision)?;
 
-        Ok(merge_id)
+        Ok(Ok(merge_id))
     }
 
     /// Rollback head to a target revision without deleting any revisions
@@ -492,17 +559,37 @@ mod tests {
             )
             .unwrap();
 
-        let merge_id = manager.merge(branch_a, branch_b).unwrap();
+        let result = manager.merge(branch_a, branch_b).unwrap();
+        let merge_id = result.unwrap();
 
         let merge_rev = manager.get(&merge_id).unwrap();
         assert_eq!(merge_rev.parents, vec![branch_a, branch_b]);
-        assert_eq!(merge_rev.changed_cells.len(), 2);
-        assert_eq!(merge_rev.changed_tiles.len(), 2);
         assert!(merge_rev.changed_cells.contains(&cell_a));
         assert!(merge_rev.changed_cells.contains(&cell_b));
         assert!(merge_rev.changed_tiles.contains(&tile_a));
         assert!(merge_rev.changed_tiles.contains(&tile_b));
         assert_eq!(manager.head(), Some(merge_id));
+        assert_eq!(merge_rev.metadata.get("merge_type").unwrap(), "three_way");
+    }
+
+    #[test]
+    fn test_merge_conflict_detection() {
+        let dir = tempdir().unwrap();
+        let config = StoreConfig { path: dir.path().to_path_buf(), ..Default::default() };
+        let engine = Arc::new(StorageEngine::create_store(config).unwrap());
+        let manager = RevisionManager::new(engine);
+
+        let root = manager.commit(None, vec![], vec![], HashMap::new()).unwrap();
+        let shared_cell = Blake3Hash([1u8; 32]);
+
+        let branch_a = manager.commit(Some(root), vec![shared_cell], vec![], HashMap::new()).unwrap();
+        let branch_b = manager.commit(Some(root), vec![shared_cell], vec![], HashMap::new()).unwrap();
+
+        let result = manager.merge(branch_a, branch_b).unwrap();
+        assert!(result.is_err());
+        let conflicts = result.unwrap_err();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].cell_hash, shared_cell);
     }
 
     #[test]
@@ -535,5 +622,37 @@ mod tests {
         assert_eq!(old_head, rev2);
         assert_eq!(manager.head(), Some(rev1));
         assert!(manager.exists(&rev2));
+    }
+
+    #[test]
+    fn test_revision_persistence() {
+        use crate::substrate::storage::{StorageEngine, StoreConfig};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let config = StoreConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let engine = Arc::new(StorageEngine::create_store(config.clone()).unwrap());
+        let manager = Arc::new(RevisionManager::new(Arc::clone(&engine)));
+
+        // Commit revisions
+        let rev1 = manager.commit(None, vec![], vec![], HashMap::new()).unwrap();
+        let rev2 = manager.commit(Some(rev1), vec![], vec![], HashMap::new()).unwrap();
+
+        // Verify head
+        assert_eq!(manager.head(), Some(rev2));
+
+        // Drop and recreate manager (simulates restart)
+        drop(manager);
+        let engine2 = Arc::new(StorageEngine::open(config).unwrap());
+        let manager2 = RevisionManager::new(engine2);
+
+        // Revisions should be restored
+        assert_eq!(manager2.head(), Some(rev2));
+        assert!(manager2.exists(&rev1));
+        assert!(manager2.exists(&rev2));
     }
 }

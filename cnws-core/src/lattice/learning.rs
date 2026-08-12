@@ -182,6 +182,12 @@ pub struct LearningEngine {
     consolidations: Arc<RwLock<Vec<ConsolidationRecord>>>,
     /// Replay buffer - kept cells that must NOT be forgotten
     replay_buffer: Arc<RwLock<HashMap<Blake3Hash, Vec<u8>>>>,
+    /// Routing hints: cell -> priority based on pattern frequency
+    routing_hints: Arc<RwLock<HashMap<Blake3Hash, f32>>>,
+    /// Cache hints: cell -> tier
+    cache_hints: Arc<RwLock<HashMap<Blake3Hash, u8>>>,
+    /// Affected tracking set
+    affected_set: Arc<RwLock<std::collections::HashSet<Blake3Hash>>>,
 }
 
 impl LearningEngine {
@@ -193,6 +199,9 @@ impl LearningEngine {
             tile_refs: Arc::new(RwLock::new(HashMap::new())),
             consolidations: Arc::new(RwLock::new(Vec::new())),
             replay_buffer: Arc::new(RwLock::new(HashMap::new())),
+            routing_hints: Arc::new(RwLock::new(HashMap::new())),
+            cache_hints: Arc::new(RwLock::new(HashMap::new())),
+            affected_set: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
 
@@ -238,10 +247,22 @@ impl LearningEngine {
                 }
             }
             LearningUpdateType::RoutingOptimization => {
-                // Update routing based on learned patterns
+                if let Some(pattern) = &update.pattern {
+                    let mut hints = self.routing_hints.write();
+                    for &cell in &pattern.cells {
+                        let priority = hints.entry(cell).or_insert(0.0);
+                        *priority += pattern.frequency as f32 * update.confidence;
+                    }
+                }
             }
             LearningUpdateType::CacheOptimization => {
-                // Update cache based on learned patterns
+                if let Some(pattern) = &update.pattern {
+                    let mut hints = self.cache_hints.write();
+                    for &cell in &pattern.cells {
+                        let tier = if pattern.frequency > 10 { 0 } else if pattern.frequency > 5 { 1 } else { 2 };
+                        hints.insert(cell, tier);
+                    }
+                }
             }
             LearningUpdateType::Consolidation => {
                 // Record consolidation for anti-catastrophic-forgetting
@@ -256,10 +277,18 @@ impl LearningEngine {
                 }
             }
             LearningUpdateType::CellRefinement => {
-                // Cell refinement creates a new cell, preserve old in replay buffer
+                let mut buffer = self.replay_buffer.write();
+                for &cell_hash in &update.cells {
+                    if !buffer.contains_key(&cell_hash) {
+                        buffer.insert(cell_hash, Vec::new());
+                    }
+                }
             }
             LearningUpdateType::CellCreate => {
-                // Cell creation - add to affected set
+                let mut affected = self.affected_set.write();
+                for &cell_hash in &update.cells {
+                    affected.insert(cell_hash);
+                }
             }
         }
 
@@ -367,6 +396,36 @@ impl LearningEngine {
             }
         }
         affected.len()
+    }
+
+    /// Get routing hint priority for a cell
+    pub fn routing_hint(&self, cell: &Blake3Hash) -> Option<f32> {
+        self.routing_hints.read().get(cell).copied()
+    }
+
+    /// Get all routing hints
+    pub fn routing_hints(&self) -> HashMap<Blake3Hash, f32> {
+        self.routing_hints.read().clone()
+    }
+
+    /// Get cache hint tier for a cell
+    pub fn cache_hint(&self, cell: &Blake3Hash) -> Option<u8> {
+        self.cache_hints.read().get(cell).copied()
+    }
+
+    /// Get all cache hints
+    pub fn cache_hints(&self) -> HashMap<Blake3Hash, u8> {
+        self.cache_hints.read().clone()
+    }
+
+    /// Get affected set size
+    pub fn affected_set_size(&self) -> usize {
+        self.affected_set.read().len()
+    }
+
+    /// Check if a cell is in the affected set
+    pub fn is_affected(&self, cell: &Blake3Hash) -> bool {
+        self.affected_set.read().contains(cell)
     }
 }
 
@@ -476,5 +535,89 @@ mod tests {
         )).unwrap();
 
         assert_eq!(engine.affected_cell_count(), 2);
+    }
+
+    #[test]
+    fn test_routing_hints() {
+        let engine = LearningEngine::new();
+        let h1 = Blake3Hash::hash(b"cell1");
+        let h2 = Blake3Hash::hash(b"cell2");
+        let pattern = CompositionPattern::new("p1", "Pattern 1", vec![h1, h2]);
+
+        let update = LearningUpdate::new(
+            LearningUpdateType::RoutingOptimization,
+            vec![],
+            vec![],
+        ).with_pattern(pattern).with_confidence(0.8);
+
+        engine.apply_update(update).unwrap();
+
+        let p1 = engine.routing_hint(&h1).unwrap();
+        let p2 = engine.routing_hint(&h2).unwrap();
+        assert!(p1 > 0.0);
+        assert!(p2 > 0.0);
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn test_cache_hints() {
+        let engine = LearningEngine::new();
+        let h1 = Blake3Hash::hash(b"cell1");
+        let mut pattern = CompositionPattern::new("p1", "Pattern 1", vec![h1]);
+        pattern.frequency = 15;
+
+        let update = LearningUpdate::new(
+            LearningUpdateType::CacheOptimization,
+            vec![],
+            vec![],
+        ).with_pattern(pattern);
+
+        engine.apply_update(update).unwrap();
+
+        let tier = engine.cache_hint(&h1).unwrap();
+        assert_eq!(tier, 0); // frequency > 10 => tier 0
+    }
+
+    #[test]
+    fn test_cell_refinement_replay_buffer() {
+        let engine = LearningEngine::new();
+        let h1 = Blake3Hash::hash(b"cell1");
+
+        assert_eq!(engine.replay_buffer_size(), 0);
+
+        engine.apply_update(LearningUpdate::new(
+            LearningUpdateType::CellRefinement,
+            vec![h1],
+            vec![],
+        )).unwrap();
+
+        assert_eq!(engine.replay_buffer_size(), 1);
+        let entry = engine.get_replay_buffer_entry(&h1).unwrap();
+        assert!(entry.is_empty());
+    }
+
+    #[test]
+    fn test_cell_create_affected_set() {
+        let engine = LearningEngine::new();
+        let h1 = Blake3Hash::hash(b"cell1");
+        let h2 = Blake3Hash::hash(b"cell2");
+
+        engine.apply_update(LearningUpdate::new(
+            LearningUpdateType::CellCreate,
+            vec![h1],
+            vec![],
+        )).unwrap();
+
+        assert!(engine.is_affected(&h1));
+        assert!(!engine.is_affected(&h2));
+        assert_eq!(engine.affected_set_size(), 1);
+
+        engine.apply_update(LearningUpdate::new(
+            LearningUpdateType::CellCreate,
+            vec![h2],
+            vec![],
+        )).unwrap();
+
+        assert_eq!(engine.affected_set_size(), 2);
     }
 }

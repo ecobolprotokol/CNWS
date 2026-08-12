@@ -118,7 +118,7 @@ mod tests {
         use crate::lattice::routing::{RoutingEngine, RoutingPolicy};
         use crate::lattice::runtime::{ExecutionEngine, MockResolver};
         use crate::substrate::storage::{StorageEngine, StoreConfig};
-        use crate::types::{Blake3Hash, CellType, ComputeBudget, Query};
+        use crate::types::{Blake3Hash, ComputeBudget, Query};
         use tempfile::tempdir;
         use std::sync::Arc;
 

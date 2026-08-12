@@ -105,7 +105,8 @@ mod tests {
 
         let b = manager.commit(Some(root), vec![], vec![], HashMap::new()).unwrap();
 
-        let merged = manager.merge(a, b).unwrap();
+        let result = manager.merge(a, b).unwrap();
+        let merged = result.unwrap();
 
         let rev = manager.get(&merged).unwrap();
         assert_eq!(rev.parents.len(), 2);

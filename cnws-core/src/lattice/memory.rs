@@ -14,6 +14,7 @@ use crate::error::{CnwsError, Result};
 use crate::types::{Blake3Hash, MemoryType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
@@ -59,6 +60,8 @@ pub struct MemoryEntry {
     pub associations: Vec<Blake3Hash>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+    /// Optional embedding vector for similarity search
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl MemoryEntry {
@@ -94,7 +97,14 @@ impl MemoryEntry {
             tags,
             associations: Vec::new(),
             metadata: HashMap::new(),
+            embedding: None,
         }
+    }
+
+    /// Set embedding vector for similarity search
+    pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
+        self.embedding = Some(embedding);
+        self
     }
 
     /// Touch (update access time and importance)
@@ -152,7 +162,7 @@ impl MemoryEntry {
 }
 
 /// Memory index entry (fixed 104 bytes on-disk)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryIndexEntry {
     /// Memory ID
     pub id: Blake3Hash,
@@ -270,14 +280,31 @@ pub struct MemorySystem {
 }
 
 impl MemorySystem {
-    /// Create a new memory system
+    /// Create a new memory system, loading existing entries from disk
     pub fn new(
         store: Arc<crate::substrate::storage::StorageEngine>,
         routing: Option<Arc<RoutingEngine>>,
     ) -> Self {
+        let mut entries_map = HashMap::new();
+        let memory_dir = store.config.path.join("memory");
+        if memory_dir.exists() {
+            if let Ok(dir_entries) = fs::read_dir(&memory_dir) {
+                for entry_result in dir_entries.flatten() {
+                    let path = entry_result.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("mem") {
+                        if let Ok(data) = fs::read(&path) {
+                            if let Ok(entry) = bincode::deserialize::<MemoryEntry>(&data) {
+                                entries_map.insert(entry.id, entry);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Self {
             store,
-            entries: Arc::new(RwLock::new(HashMap::new())),
+            entries: Arc::new(RwLock::new(entries_map)),
             routing,
             working_memory: Arc::new(RwLock::new(WorkingMemory::new(1000))),
             decay_rate: 0.01,
@@ -291,9 +318,26 @@ impl MemorySystem {
         working_memory_size: usize,
         decay_rate: f32,
     ) -> Self {
+        let mut entries_map = HashMap::new();
+        let memory_dir = store.config.path.join("memory");
+        if memory_dir.exists() {
+            if let Ok(dir_entries) = fs::read_dir(&memory_dir) {
+                for entry_result in dir_entries.flatten() {
+                    let path = entry_result.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("mem") {
+                        if let Ok(data) = fs::read(&path) {
+                            if let Ok(entry) = bincode::deserialize::<MemoryEntry>(&data) {
+                                entries_map.insert(entry.id, entry);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Self {
             store,
-            entries: Arc::new(RwLock::new(HashMap::new())),
+            entries: Arc::new(RwLock::new(entries_map)),
             routing,
             working_memory: Arc::new(RwLock::new(WorkingMemory::new(working_memory_size))),
             decay_rate,
@@ -315,6 +359,9 @@ impl MemorySystem {
         // Store value as tile
         self.store.write_tile(&entry.value, crate::types::Compression::Zstd)?;
 
+        // Persist to disk
+        self.persist_entry(&entry)?;
+
         // Update index
         self.entries.write().insert(id, entry);
 
@@ -322,6 +369,53 @@ impl MemorySystem {
         self.working_memory.write().push(id);
 
         Ok(id)
+    }
+
+    /// Write a pre-built memory entry
+    pub fn write_entry(&self, mut entry: MemoryEntry) -> Result<Blake3Hash> {
+        entry.lifecycle = MemoryLifecycle::Active;
+        let id = entry.id;
+
+        self.store.write_tile(&entry.value, crate::types::Compression::Zstd)?;
+
+        self.persist_entry(&entry)?;
+
+        self.entries.write().insert(id, entry);
+
+        self.working_memory.write().push(id);
+
+        Ok(id)
+    }
+
+    /// Persist a single memory entry to disk and update the index
+    fn persist_entry(&self, entry: &MemoryEntry) -> Result<()> {
+        let memory_dir = self.store.config.path.join("memory");
+        fs::create_dir_all(&memory_dir)?;
+
+        let hex_id = entry.id.to_hex();
+        let entry_path = memory_dir.join(format!("{}.mem", hex_id));
+        let data = bincode::serialize(entry)?;
+        fs::write(&entry_path, data)?;
+
+        self.save_index()
+    }
+
+    /// Save the memory index file
+    fn save_index(&self) -> Result<()> {
+        let entries = self.entries.read();
+        let index_entries: Vec<MemoryIndexEntry> = entries
+            .values()
+            .map(MemoryIndexEntry::from_entry)
+            .collect();
+
+        let memory_dir = self.store.config.path.join("memory");
+        fs::create_dir_all(&memory_dir)?;
+
+        let index_path = memory_dir.join("index.cd");
+        let data = bincode::serialize(&index_entries)?;
+        fs::write(&index_path, data)?;
+
+        Ok(())
     }
 
     /// Read a memory entry
@@ -338,23 +432,48 @@ impl MemorySystem {
     /// Search memory by query
     pub fn search(&self, query: &str, memory_type: Option<MemoryType>) -> Vec<MemoryEntry> {
         let entries = self.entries.read();
+
+        // Try to parse query as a numeric vector for embedding search
+        if let Some(query_vec) = parse_float_vector(query) {
+            let mut scored: Vec<(f32, MemoryEntry)> = entries
+                .values()
+                .filter(|entry| {
+                    if let Some(mt) = memory_type {
+                        if entry.memory_type != mt {
+                            return false;
+                        }
+                    }
+                    if entry.lifecycle == MemoryLifecycle::Forgotten {
+                        return false;
+                    }
+                    entry.embedding.is_some()
+                })
+                .filter_map(|entry| {
+                    let emb = entry.embedding.as_ref()?;
+                    let score = cosine_similarity(&query_vec, emb);
+                    Some((score, entry.clone()))
+                })
+                .collect();
+
+            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            return scored.into_iter().map(|(_, e)| e).collect();
+        }
+
+        // Fallback to text search
         let query_lower = query.to_lowercase();
 
         let mut results: Vec<MemoryEntry> = entries.values()
             .filter(|entry| {
-                // Filter by type
                 if let Some(mt) = memory_type {
                     if entry.memory_type != mt {
                         return false;
                     }
                 }
 
-                // Skip forgotten entries
                 if entry.lifecycle == MemoryLifecycle::Forgotten {
                     return false;
                 }
 
-                // Search in key, value, and tags
                 let key_match = String::from_utf8_lossy(&entry.key).to_lowercase().contains(&query_lower);
                 let value_match = String::from_utf8_lossy(&entry.value).to_lowercase().contains(&query_lower);
                 let tag_match = entry.tags.iter().any(|t| t.to_lowercase().contains(&query_lower));
@@ -364,7 +483,6 @@ impl MemorySystem {
             .cloned()
             .collect();
 
-        // Sort by importance (most important first)
         results.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
         results
     }
@@ -374,6 +492,15 @@ impl MemorySystem {
         self.entries.write()
             .remove(id)
             .ok_or_else(|| CnwsError::MemoryNotFound)?;
+
+        // Remove from disk
+        let hex_id = id.to_hex();
+        let memory_dir = self.store.config.path.join("memory");
+        let entry_path = memory_dir.join(format!("{}.mem", hex_id));
+        let _ = fs::remove_file(&entry_path);
+
+        self.save_index()?;
+
         Ok(())
     }
 
@@ -451,6 +578,33 @@ impl MemorySystem {
     pub fn routing(&self) -> Option<Arc<RoutingEngine>> {
         self.routing.as_ref().map(Arc::clone)
     }
+}
+
+/// Parse a comma-separated string of floats
+fn parse_float_vector(s: &str) -> Option<Vec<f32>> {
+    let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
+    if parts.is_empty() || (parts.len() == 1 && parts[0].is_empty()) {
+        return None;
+    }
+    let mut result = Vec::with_capacity(parts.len());
+    for part in &parts {
+        result.push(part.parse::<f32>().ok()?);
+    }
+    Some(result)
+}
+
+/// Compute cosine similarity between two vectors
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
 }
 
 #[cfg(test)]
@@ -558,5 +712,70 @@ mod tests {
         assert_eq!(entry.id, entry2.id);
         assert_eq!(entry.memory_type, entry2.memory_type);
         assert_eq!(entry.importance_scaled, entry2.importance_scaled);
+    }
+
+    #[test]
+    fn test_memory_persistence() {
+        use crate::substrate::storage::{StorageEngine, StoreConfig};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let config = StoreConfig { path: dir.path().to_path_buf(), ..Default::default() };
+        let store = Arc::new(StorageEngine::create_store(config.clone()).unwrap());
+
+        let mem_sys = MemorySystem::new(Arc::clone(&store), None);
+        let id = mem_sys.write(
+            MemoryType::Episodic,
+            b"key1".to_vec(),
+            b"value1".to_vec(),
+            vec!["tag1".to_string()],
+        ).unwrap();
+
+        assert_eq!(mem_sys.count(), 1);
+
+        // Drop and recreate (simulates restart)
+        drop(mem_sys);
+        let store2 = Arc::new(StorageEngine::open(config).unwrap());
+        let mem_sys2 = MemorySystem::new(store2, None);
+
+        assert_eq!(mem_sys2.count(), 1);
+        let entry = mem_sys2.read(&id).unwrap();
+        assert_eq!(entry.key, b"key1");
+    }
+
+    #[test]
+    fn test_memory_embedding_search() {
+        use crate::substrate::storage::{StorageEngine, StoreConfig};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let config = StoreConfig { path: dir.path().to_path_buf(), ..Default::default() };
+        let store = Arc::new(StorageEngine::create_store(config).unwrap());
+        let mem_sys = MemorySystem::new(store, None);
+
+        // Create entries with embeddings
+        let mut e1 = crate::lattice::memory::MemoryEntry::new(
+            MemoryType::Semantic,
+            b"cat".to_vec(),
+            b"A cat is an animal".to_vec(),
+            vec![],
+        );
+        e1.embedding = Some(vec![1.0, 0.0, 0.0]);
+        mem_sys.write_entry(e1).unwrap();
+
+        let mut e2 = crate::lattice::memory::MemoryEntry::new(
+            MemoryType::Semantic,
+            b"dog".to_vec(),
+            b"A dog is an animal".to_vec(),
+            vec![],
+        );
+        e2.embedding = Some(vec![0.0, 1.0, 0.0]);
+        mem_sys.write_entry(e2).unwrap();
+
+        // Search with vector query
+        let results = mem_sys.search("1.0,0.0,0.0", None);
+        assert_eq!(results.len(), 2);
+        // Cat should rank first (same direction as query)
+        assert_eq!(String::from_utf8_lossy(&results[0].key), "cat");
     }
 }

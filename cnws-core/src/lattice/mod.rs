@@ -8,7 +8,7 @@ pub mod learning;
 pub mod cache;
 pub mod prefetch;
 
-pub use runtime::{ExecutionEngine, MockResolver, RuntimeResolver, WorkingState, CellRef};
+pub use runtime::{ExecutionEngine, MockResolver, RuntimeResolver, StorageBackedResolver, WorkingState, CellRef};
 pub use memory::{MemoryEntry, MemoryIndexEntry, MemorySystem};
 pub use routing::{CellMetadata, RoutingEngine, RoutingPolicy, RoutingStatistics};
 pub use learning::{CompositionPattern, LearningEngine, LearningUpdate, LearningUpdateType, TileRef};

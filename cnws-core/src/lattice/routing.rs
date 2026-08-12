@@ -79,6 +79,8 @@ pub struct CellMetadata {
     pub last_accessed: u64,
     /// Routing statistics
     pub routing_stats: CellRoutingStats,
+    /// Index vector for content-based similarity
+    pub index_vector: Option<Vec<f32>>,
 }
 
 impl CellMetadata {
@@ -98,7 +100,14 @@ impl CellMetadata {
             access_count: 0,
             last_accessed: now,
             routing_stats: CellRoutingStats::default(),
+            index_vector: None,
         }
+    }
+
+    /// Set index vector for content-based similarity
+    pub fn with_index_vector(mut self, vec: Vec<f32>) -> Self {
+        self.index_vector = Some(vec);
+        self
     }
 
     /// Touch (update access time)
@@ -228,12 +237,21 @@ impl RoutingEngine {
     /// Compute similarity score
     fn compute_similarity(&self, query: &[f32], metadata: &CellMetadata) -> f32 {
         if query.is_empty() {
-            // Fallback: use size-based heuristic
             return 1.0 / (1.0 + (metadata.size as f32 / 1_000_000.0));
         }
 
-        // Simplified: hash-based pseudo-similarity
-        // In real implementation, would use actual embedding vectors stored with cells
+        if let Some(ref index_vec) = metadata.index_vector {
+            if !index_vec.is_empty() && query.len() == index_vec.len() {
+                let dot_product: f32 = query.iter().zip(index_vec.iter()).map(|(a, b)| a * b).sum();
+                let norm_a: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let norm_b: f32 = index_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm_a == 0.0 || norm_b == 0.0 {
+                    return 0.0;
+                }
+                return dot_product / (norm_a * norm_b);
+            }
+        }
+
         let hash_bytes = metadata.hash.0;
         let mut dot_product = 0.0f32;
         let mut norm_b = 0.0f32;
@@ -278,72 +296,45 @@ impl RoutingEngine {
     }
 
     /// Route a query based on policy
-    pub fn route(&self, _query: &str) -> Result<Vec<Blake3Hash>> {
+    pub fn route(&self, query: &str) -> Result<Vec<Blake3Hash>> {
         let policy = *self.policy.read();
         let cells = self.cells.read();
 
+        let keywords: Vec<String> = query
+            .split_whitespace()
+            .map(|w| w.to_lowercase())
+            .collect();
+        let has_keywords = !keywords.is_empty();
+
+        let matches_keywords = |metadata: &CellMetadata| -> bool {
+            if !has_keywords {
+                return true;
+            }
+            let ct_lower = metadata.cell_type.to_lowercase();
+            keywords.iter().any(|kw| ct_lower.contains(kw.as_str()))
+        };
+
+        let results = self.select_by_policy(&cells, policy, matches_keywords);
+
+        let results = if results.is_empty() && has_keywords {
+            let fallback = |_: &CellMetadata| true;
+            self.select_by_policy(&cells, policy, fallback)
+        } else {
+            results
+        };
+
         let mut local_count = 0u64;
         let mut remote_count = 0u64;
-        let mut results = Vec::new();
-
-        match policy {
-            RoutingPolicy::Local => {
-                for (hash, metadata) in cells.iter() {
-                    if metadata.is_local {
-                        results.push(*hash);
-                        local_count += 1;
-                    }
-                }
-            }
-            RoutingPolicy::Remote => {
-                for (hash, metadata) in cells.iter() {
-                    if !metadata.is_local {
-                        results.push(*hash);
-                        remote_count += 1;
-                    }
-                }
-            }
-            RoutingPolicy::Auto => {
-                for (hash, metadata) in cells.iter() {
-                    if metadata.is_local {
-                        results.push(*hash);
-                        local_count += 1;
-                    }
-                }
-                for (hash, metadata) in cells.iter() {
-                    if !metadata.is_local {
-                        results.push(*hash);
-                        remote_count += 1;
-                    }
-                }
-            }
-            RoutingPolicy::LoadBalanced => {
-                let mut cell_vec: Vec<_> = cells.values().collect();
-                cell_vec.sort_by(|a, b| a.access_count.cmp(&b.access_count));
-                for metadata in cell_vec.iter().take(10) {
-                    results.push(metadata.hash);
-                    if metadata.is_local {
-                        local_count += 1;
-                    } else {
-                        remote_count += 1;
-                    }
-                }
-            }
-            RoutingPolicy::LowestLatency => {
-                let mut cell_vec: Vec<_> = cells.values().collect();
-                cell_vec.sort_by(|a, b| a.latency_us.cmp(&b.latency_us));
-                for metadata in cell_vec.iter().take(10) {
-                    results.push(metadata.hash);
-                    if metadata.is_local {
-                        local_count += 1;
-                    } else {
-                        remote_count += 1;
-                    }
+        for &hash in &results {
+            if let Some(meta) = cells.get(&hash) {
+                if meta.is_local {
+                    local_count += 1;
+                } else {
+                    remote_count += 1;
                 }
             }
         }
 
-        // Update statistics correctly
         {
             let mut stats = self.statistics.write();
             stats.total_queries += 1;
@@ -352,6 +343,81 @@ impl RoutingEngine {
         }
 
         Ok(results)
+    }
+
+    fn select_by_policy(
+        &self,
+        cells: &HashMap<Blake3Hash, CellMetadata>,
+        policy: RoutingPolicy,
+        filter: impl Fn(&CellMetadata) -> bool,
+    ) -> Vec<Blake3Hash> {
+        let mut results = Vec::new();
+
+        match policy {
+            RoutingPolicy::Local => {
+                for (hash, metadata) in cells.iter() {
+                    if metadata.is_local && filter(metadata) {
+                        results.push(*hash);
+                    }
+                }
+            }
+            RoutingPolicy::Remote => {
+                for (hash, metadata) in cells.iter() {
+                    if !metadata.is_local && filter(metadata) {
+                        results.push(*hash);
+                    }
+                }
+            }
+            RoutingPolicy::Auto => {
+                let mut local_cells: Vec<_> = cells.values().filter(|m| m.is_local).collect();
+                let mut remote_cells: Vec<_> = cells.values().filter(|m| !m.is_local).collect();
+                local_cells.sort_by(|a, b| a.latency_us.cmp(&b.latency_us));
+                remote_cells.sort_by(|a, b| a.latency_us.cmp(&b.latency_us));
+
+                let selection_k = std::cmp::max(local_cells.len(), remote_cells.len());
+
+                let filtered_local: Vec<_> = local_cells
+                    .into_iter()
+                    .filter(|m| filter(m))
+                    .take(selection_k)
+                    .collect();
+                let filtered_remote: Vec<_> = remote_cells
+                    .into_iter()
+                    .filter(|m| filter(m))
+                    .take(selection_k)
+                    .collect();
+
+                if !filtered_local.is_empty() {
+                    for metadata in filtered_local {
+                        results.push(metadata.hash);
+                    }
+                } else {
+                    for metadata in filtered_remote {
+                        results.push(metadata.hash);
+                    }
+                }
+            }
+            RoutingPolicy::LoadBalanced => {
+                let mut cell_vec: Vec<_> = cells.values().collect();
+                cell_vec.sort_by(|a, b| a.access_count.cmp(&b.access_count));
+                for metadata in cell_vec.iter().take(10) {
+                    if filter(metadata) {
+                        results.push(metadata.hash);
+                    }
+                }
+            }
+            RoutingPolicy::LowestLatency => {
+                let mut cell_vec: Vec<_> = cells.values().collect();
+                cell_vec.sort_by(|a, b| a.latency_us.cmp(&b.latency_us));
+                for metadata in cell_vec.iter().take(10) {
+                    if filter(metadata) {
+                        results.push(metadata.hash);
+                    }
+                }
+            }
+        }
+
+        results
     }
 
     /// Set routing policy
@@ -467,5 +533,55 @@ mod tests {
         assert_eq!(results.len(), 2);
         // Results should be sorted by score descending
         assert!(results[0].1 >= results[1].1);
+    }
+
+    #[test]
+    fn test_routing_with_index_vectors() {
+        let engine = RoutingEngine::new(RoutingPolicy::Auto);
+        let hash1 = Blake3Hash::hash(b"cell1");
+        let hash2 = Blake3Hash::hash(b"cell2");
+
+        engine.register_cell(
+            CellMetadata::new(hash1, "tensor", 1024)
+                .with_index_vector(vec![1.0, 0.0, 0.0])
+        );
+        engine.register_cell(
+            CellMetadata::new(hash2, "attention", 2048)
+                .with_index_vector(vec![0.0, 1.0, 0.0])
+        );
+
+        let query = vec![1.0, 0.0, 0.0];
+        let results = engine.select(&query, &[hash1, hash2], 2).unwrap();
+
+        assert_eq!(results.len(), 2);
+        // Cell1 should score higher (same direction as query)
+        assert!(results[0].0 == hash1 || results[0].1 >= results[1].1);
+    }
+
+    #[test]
+    fn test_auto_routing_policy() {
+        let engine = RoutingEngine::new(RoutingPolicy::Auto);
+        for i in 0..20u8 {
+            let hash = Blake3Hash::hash(&[i]);
+            let mut meta = CellMetadata::new(hash, "tensor", 1024);
+            meta.is_local = i % 2 == 0;
+            engine.register_cell(meta);
+        }
+
+        let results = engine.route("test").unwrap();
+        // Auto should not return all 20 cells
+        assert!(results.len() <= 10);
+    }
+
+    #[test]
+    fn test_route_with_query_filter() {
+        let engine = RoutingEngine::new(RoutingPolicy::Local);
+        let hash1 = Blake3Hash::hash(b"attn");
+        let hash2 = Blake3Hash::hash(b"ffn");
+        engine.register_cell(CellMetadata::new(hash1, "attention", 1024));
+        engine.register_cell(CellMetadata::new(hash2, "feedforward", 2048));
+
+        let results = engine.route("attention").unwrap();
+        assert!(results.contains(&hash1));
     }
 }

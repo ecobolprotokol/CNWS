@@ -15,6 +15,7 @@ use crate::types::{
     Blake3Hash, Compression, DataType, DEFAULT_CONVERSION_TILE_SIZE, TensorPatterns,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
@@ -386,10 +387,21 @@ impl TensorReader for SafetensorsReader {
     }
 }
 
-/// GGUF format reader (simplified)
+/// GGUF tensor info entry
+#[derive(Debug, Clone)]
+struct GgufTensorInfo {
+    name: String,
+    dimensions: Vec<u64>,
+    ggml_type: u32,
+    offset: u64,
+}
+
+/// GGUF format reader with proper header parsing
 pub struct GgufReader {
     data: Vec<u8>,
-    tensor_names: Vec<String>,
+    metadata: HashMap<String, serde_json::Value>,
+    tensor_infos: Vec<GgufTensorInfo>,
+    data_offset: usize,
     current_index: usize,
 }
 
@@ -398,45 +410,200 @@ impl GgufReader {
     pub fn open(path: &Path) -> Result<Self> {
         let data = std::fs::read(path)?;
 
-        if data.len() < 12 || &data[0..4] != b"GGUF" {
+        if data.len() < 24 || &data[0..4] != b"GGUF" {
             return Err(CnwsError::InvalidModelFile("Not a valid GGUF file".to_string()));
         }
 
-        // Simplified: just treat the whole file as a single tensor
-        let mut tensor_names = Vec::new();
-        tensor_names.push("model_data".to_string());
+        let _version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        let tensor_count = u64::from_le_bytes(data[8..16].try_into().unwrap()) as usize;
+        let metadata_kv_count = u64::from_le_bytes(data[16..24].try_into().unwrap()) as usize;
+
+        let mut offset = 24;
+        let mut metadata = HashMap::new();
+
+        // Parse metadata KV pairs
+        for _ in 0..metadata_kv_count {
+            if offset + 8 > data.len() { break; }
+            let key_len = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap()) as usize;
+            offset += 8;
+            if offset + key_len > data.len() { break; }
+            let key = String::from_utf8_lossy(&data[offset..offset+key_len]).to_string();
+            offset += key_len;
+
+            if offset + 4 > data.len() { break; }
+            let val_type = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap());
+            offset += 4;
+
+            let val_size = match val_type {
+                0 => 1,  // UINT8
+                1 => 1,  // INT8
+                2 => 2,  // UINT16
+                3 => 2,  // INT16
+                4 => 4,  // UINT32
+                5 => 4,  // INT32
+                6 => 4,  // FLOAT32
+                7 => 1,  // BOOL
+                8 => {   // STRING
+                    if offset + 8 > data.len() { break; }
+                    let slen = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap()) as usize;
+                    8 + slen
+                }
+                9 => {   // ARRAY
+                    if offset + 4 > data.len() { break; }
+                    let elem_type = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap());
+                    let elem_size = match elem_type {
+                        0|1 => 1, 2|3 => 2, 4|5|6 => 4, 7 => 1, _ => 0,
+                    };
+                    offset += 4;
+                    if offset + 8 > data.len() { break; }
+                    let arr_len = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap()) as usize;
+                    offset += 8;
+                    arr_len * elem_size
+                }
+                10 => 8, // UINT64
+                11 => 8, // INT64
+                12 => 8, // FLOAT64
+                _ => break,
+            };
+
+            // Store actual values for common types
+            if val_type == 8 && offset + 8 <= data.len() {
+                let slen = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap()) as usize;
+                if offset + 8 + slen <= data.len() {
+                    let str_val = String::from_utf8_lossy(&data[offset+8..offset+8+slen]).to_string();
+                    metadata.insert(key, serde_json::Value::String(str_val));
+                }
+            } else if val_type == 6 && offset + 4 <= data.len() {
+                let v = f32::from_le_bytes(data[offset..offset+4].try_into().unwrap());
+                metadata.insert(key, serde_json::json!(v));
+            } else if (val_type == 4 || val_type == 5) && offset + 4 <= data.len() {
+                let v = i32::from_le_bytes(data[offset..offset+4].try_into().unwrap());
+                metadata.insert(key, serde_json::json!(v));
+            }
+            offset += val_size;
+        }
+
+        // Parse tensor info entries
+        let mut tensor_infos = Vec::new();
+        for _ in 0..tensor_count {
+            if offset + 8 > data.len() { break; }
+            let name_len = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap()) as usize;
+            offset += 8;
+            if offset + name_len > data.len() { break; }
+            let name = String::from_utf8_lossy(&data[offset..offset+name_len]).to_string();
+            offset += name_len;
+
+            if offset + 4 > data.len() { break; }
+            let n_dims = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+            offset += 4;
+
+            let mut dims = Vec::new();
+            for _ in 0..n_dims {
+                if offset + 8 > data.len() { break; }
+                dims.push(u64::from_le_bytes(data[offset..offset+8].try_into().unwrap()));
+                offset += 8;
+            }
+
+            if offset + 8 > data.len() { break; }
+            let ggml_type = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap());
+            offset += 4;
+            let tensor_offset = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
+            offset += 8;
+
+            tensor_infos.push(GgufTensorInfo {
+                name,
+                dimensions: dims,
+                ggml_type,
+                offset: tensor_offset,
+            });
+        }
+
+        let data_offset = offset;
 
         Ok(Self {
             data,
-            tensor_names,
+            metadata,
+            tensor_infos,
+            data_offset,
             current_index: 0,
         })
+    }
+
+    /// Map GGUF ggml_type to CNWS DataType
+    fn ggml_type_to_dtype(t: u32) -> DataType {
+        match t {
+            0 | 10 => DataType::F32,  // F32, UINT64 → F32
+            1 | 11 => DataType::F16,  // F16, INT64 → F16
+            _ => DataType::F32,       // quantized types → F32 dequantization target
+        }
+    }
+
+    /// Get element size in bytes for a GGML type
+    fn ggml_type_element_size(t: u32) -> usize {
+        match t {
+            0 => 4,   // F32
+            1 => 2,   // F16
+            2 => 18,  // Q4_0: 18 bytes per 32 elements
+            3 => 20,  // Q4_1: 20 bytes per 32 elements
+            7 => 1,   // Q8_0
+            8 => 2,   // Q8_1
+            9 => 2,   // Q2_K
+            10 => 8,  // UINT64
+            11 => 8,  // INT64
+            _ => 4,
+        }
+    }
+
+    /// Get metadata value by key
+    pub fn metadata(&self, key: &str) -> Option<&serde_json::Value> {
+        self.metadata.get(key)
+    }
+
+    /// Get all metadata
+    pub fn all_metadata(&self) -> &HashMap<String, serde_json::Value> {
+        &self.metadata
     }
 }
 
 impl TensorReader for GgufReader {
     fn read_next_tensor(&mut self) -> Result<Option<TensorChunk>> {
-        if self.current_index >= self.tensor_names.len() {
+        if self.current_index >= self.tensor_infos.len() {
             return Ok(None);
         }
 
-        let name = self.tensor_names[self.current_index].clone();
+        let info = &self.tensor_infos[self.current_index];
         self.current_index += 1;
 
-        let mut metadata = std::collections::HashMap::new();
+        let dtype = Self::ggml_type_to_dtype(info.ggml_type);
+        let elem_size = Self::ggml_type_element_size(info.ggml_type);
+        let num_elements: usize = info.dimensions.iter().product::<u64>() as usize;
+        let total_bytes = num_elements * elem_size;
+
+        let start = (self.data_offset as u64 + info.offset) as usize;
+        let end = (start + total_bytes).min(self.data.len());
+        let data = if start < self.data.len() {
+            self.data[start..end].to_vec()
+        } else {
+            vec![0u8; total_bytes]
+        };
+
+        let shape: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
+
+        let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), "gguf".to_string());
+        metadata.insert("ggml_type".to_string(), info.ggml_type.to_string());
 
         Ok(Some(TensorChunk {
-            name,
-            dtype: DataType::F32,
-            shape: vec![self.data.len() / 4],
-            data: self.data.clone(),
+            name: info.name.clone(),
+            dtype,
+            shape,
+            data,
             metadata,
         }))
     }
 
     fn tensor_count(&self) -> usize {
-        self.tensor_names.len()
+        self.tensor_infos.len()
     }
 
     fn format_name(&self) -> &str {
@@ -509,7 +676,7 @@ impl ConversionPipeline {
         Ok(report)
     }
 
-    /// Import from PyTorch format (simplified)
+    /// Import from PyTorch format with minimal pickle parser
     pub fn import_pytorch(&self, path: impl AsRef<Path>) -> Result<ImportReport> {
         let data = std::fs::read(path.as_ref())?;
         let mut report = ImportReport {
@@ -518,12 +685,105 @@ impl ConversionPipeline {
             ..Default::default()
         };
 
-        // Simplified: store raw data as a single cell
-        let _hash = self.store.write_tile(&data, self.compression)?;
-        report.tiles_written += 1;
-        report.tensors_imported += 1;
-        report.cells_created += 1;
-        report.compressed_bytes = data.len() as u64;
+        if data.len() < 2 {
+            return Err(CnwsError::InvalidModelFile("PyTorch file too small".to_string()));
+        }
+
+        // Check pickle protocol magic: 0x80 followed by protocol version
+        if data[0] != 0x80 {
+            return Err(CnwsError::InvalidModelFile("Not a valid PyTorch pickle file".to_string()));
+        }
+
+        let protocol = data[1];
+        if protocol != 2 && protocol != 4 {
+            return Err(CnwsError::InvalidModelFile(format!(
+                "Unsupported pickle protocol: {}", protocol
+            )));
+        }
+
+        // Scan for tensor data blobs in the pickle stream
+        // PyTorch state dicts store tensors using LONG_BLOB (0x80 0x08) or SHORT_BLOB (0x80 0x06) opcodes
+        let mut offset = 0;
+        let mut tensor_idx = 0;
+
+        while offset + 3 < data.len() {
+            if data[offset] == 0x80 {
+                let opcode = data[offset + 1];
+                match opcode {
+                    0x06 => { // SHORT_BLOB: 1-byte length
+                        if offset + 3 < data.len() {
+                            let blob_len = data[offset + 2] as usize;
+                            let blob_start = offset + 3;
+                            let blob_end = (blob_start + blob_len).min(data.len());
+                            if blob_start < data.len() && blob_end > blob_start {
+                                let tensor_data = data[blob_start..blob_end].to_vec();
+                                let hash = self.store.write_tile(&tensor_data, self.compression)?;
+                                report.tiles_written += 1;
+                                report.tensor_details.push(TensorImportDetail {
+                                    name: format!("tensor_{}", tensor_idx),
+                                    cell_type: "NORM_SCALE".to_string(),
+                                    data_type: "F32".to_string(),
+                                    shape: vec![tensor_data.len() / 4],
+                                    size: tensor_data.len() as u64,
+                                    cell_hash: format!("{:x}", hash),
+                                    deduplicated: false,
+                                });
+                                tensor_idx += 1;
+                                offset = blob_end;
+                                continue;
+                            }
+                        }
+                    }
+                    0x08 => { // LONG_BLOB: 4-byte little-endian length
+                        if offset + 6 < data.len() {
+                            let blob_len = u32::from_le_bytes(
+                                data[offset + 2..offset + 6].try_into().unwrap()
+                            ) as usize;
+                            let blob_start = offset + 6;
+                            let blob_end = (blob_start + blob_len).min(data.len());
+                            if blob_start < data.len() && blob_end > blob_start {
+                                let tensor_data = data[blob_start..blob_end].to_vec();
+                                let hash = self.store.write_tile(&tensor_data, self.compression)?;
+                                report.tiles_written += 1;
+                                report.tensor_details.push(TensorImportDetail {
+                                    name: format!("tensor_{}", tensor_idx),
+                                    cell_type: "NORM_SCALE".to_string(),
+                                    data_type: "F32".to_string(),
+                                    shape: vec![tensor_data.len() / 4],
+                                    size: tensor_data.len() as u64,
+                                    cell_hash: format!("{:x}", hash),
+                                    deduplicated: false,
+                                });
+                                tensor_idx += 1;
+                                offset = blob_end;
+                                continue;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            offset += 1;
+        }
+
+        // If no blobs found, store entire file as single tensor
+        if tensor_idx == 0 {
+            let hash = self.store.write_tile(&data, self.compression)?;
+            report.tiles_written += 1;
+            report.tensor_details.push(TensorImportDetail {
+                name: "model_data".to_string(),
+                cell_type: "NORM_SCALE".to_string(),
+                data_type: "BINARY".to_string(),
+                shape: vec![data.len()],
+                size: data.len() as u64,
+                cell_hash: format!("{:x}", hash),
+                deduplicated: false,
+            });
+        }
+
+        report.tensors_imported = tensor_idx.max(1) as u64;
+        report.cells_created = report.tensors_imported;
+        report.compressed_bytes = report.total_bytes;
 
         Ok(report)
     }
@@ -566,13 +826,7 @@ impl ConversionPipeline {
                 self.import_from_reader(&mut reader, &mut report)?;
             }
             ImportFormat::PyTorch => {
-                let data = std::fs::read(path)?;
-                report.total_bytes = data.len() as u64;
-                let _hash = self.store.write_tile(&data, self.compression)?;
-                report.tiles_written += 1;
-                report.tensors_imported += 1;
-                report.cells_created += 1;
-                report.compressed_bytes = data.len() as u64;
+                report = self.import_pytorch(path)?;
             }
             ImportFormat::Onnx => {
                 let data = std::fs::read(path)?;
@@ -814,5 +1068,144 @@ mod tests {
         assert!(sanitize_tensor_name("tensor\nname").is_err());
         assert!(sanitize_tensor_name("tensor\tname").is_err());
         assert!(sanitize_tensor_name("tensor\x01name").is_err());
+    }
+
+    #[test]
+    fn test_gguf_reader() {
+        use tempfile::tempdir;
+        
+        let dir = tempdir().unwrap();
+        let mut data = Vec::new();
+        
+        // Write GGUF magic
+        data.extend_from_slice(b"GGUF");
+        // Version (u32 LE)
+        data.extend_from_slice(&3u32.to_le_bytes());
+        // Tensor count (u64 LE)
+        data.extend_from_slice(&0u64.to_le_bytes());
+        // Metadata KV count (u64 LE)
+        data.extend_from_slice(&0u64.to_le_bytes());
+        // Some padding
+        data.extend_from_slice(&[0u8; 100]);
+        
+        let path = dir.path().join("test.gguf");
+        std::fs::write(&path, &data).unwrap();
+        
+        let mut reader = GgufReader::open(&path).unwrap();
+        assert_eq!(reader.tensor_count(), 0);
+        
+        let result = reader.read_next_tensor().unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_gguf_tensor_extraction() {
+        use tempfile::tempdir;
+        
+        let dir = tempdir().unwrap();
+        let mut data = Vec::new();
+        
+        // Write GGUF header
+        data.extend_from_slice(b"GGUF");
+        data.extend_from_slice(&3u32.to_le_bytes()); // version
+        data.extend_from_slice(&1u64.to_le_bytes()); // 1 tensor
+        data.extend_from_slice(&0u64.to_le_bytes()); // 0 metadata KVs
+        
+        // Tensor info: name="weight", 1 dim [4], type=F32(0), offset=0
+        let tname = "weight";
+        data.extend_from_slice(&(tname.len() as u64).to_le_bytes());
+        data.extend_from_slice(tname.as_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // n_dims
+        data.extend_from_slice(&4u64.to_le_bytes()); // dim
+        data.extend_from_slice(&0u32.to_le_bytes()); // F32
+        data.extend_from_slice(&0u64.to_le_bytes()); // offset
+        
+        // Tensor data: 4 floats = 16 bytes
+        for f in [1.0f32, 2.0, 3.0, 4.0] {
+            data.extend_from_slice(&f.to_le_bytes());
+        }
+        
+        let path = dir.path().join("test.gguf");
+        std::fs::write(&path, &data).unwrap();
+        
+        let mut reader = GgufReader::open(&path).unwrap();
+        assert_eq!(reader.tensor_count(), 1);
+        let chunk = reader.read_next_tensor().unwrap().unwrap();
+        assert_eq!(chunk.name, "weight");
+        assert_eq!(chunk.shape, vec![4]);
+        assert_eq!(chunk.dtype, DataType::F32);
+        assert_eq!(chunk.data.len(), 16);
+    }
+
+    #[test]
+    fn test_gguf_real_header_parsing() {
+        use tempfile::tempdir;
+        
+        let dir = tempdir().unwrap();
+        let mut data = Vec::new();
+        
+        // GGUF Header
+        data.extend_from_slice(b"GGUF");
+        data.extend_from_slice(&3u32.to_le_bytes()); // version
+        
+        // 1 tensor
+        data.extend_from_slice(&1u64.to_le_bytes());
+        // 1 metadata KV
+        data.extend_from_slice(&1u64.to_le_bytes());
+        
+        // Metadata KV: "architecture" = "llama" (STRING type=8)
+        let key = "architecture";
+        data.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        data.extend_from_slice(key.as_bytes());
+        data.extend_from_slice(&8u32.to_le_bytes()); // STRING type
+        let val = "llama";
+        data.extend_from_slice(&(val.len() as u64).to_le_bytes());
+        data.extend_from_slice(val.as_bytes());
+        
+        // Tensor info: name="layer.0.weight", 2 dims [32, 32], type=F32(0), offset=0
+        let tname = "layer.0.weight";
+        data.extend_from_slice(&(tname.len() as u64).to_le_bytes());
+        data.extend_from_slice(tname.as_bytes());
+        data.extend_from_slice(&2u32.to_le_bytes()); // n_dims
+        data.extend_from_slice(&32u64.to_le_bytes());
+        data.extend_from_slice(&32u64.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // F32
+        data.extend_from_slice(&0u64.to_le_bytes()); // offset
+        
+        // Tensor data: 32*32*4 = 4096 bytes of zeros
+        data.extend_from_slice(&vec![0u8; 4096]);
+        
+        let path = dir.path().join("test.gguf");
+        std::fs::write(&path, &data).unwrap();
+        
+        let mut reader = GgufReader::open(&path).unwrap();
+        assert_eq!(reader.tensor_count(), 1);
+        
+        // Check metadata
+        assert_eq!(reader.metadata.get("architecture").and_then(|v| v.as_str()), Some("llama"));
+        
+        // Read tensor
+        let chunk = reader.read_next_tensor().unwrap().unwrap();
+        assert_eq!(chunk.name, "layer.0.weight");
+        assert_eq!(chunk.shape, vec![32, 32]);
+        assert_eq!(chunk.dtype, DataType::F32);
+    }
+
+    #[test]
+    fn test_pytorch_pickle_detection() {
+        use tempfile::tempdir;
+        
+        let dir = tempdir().unwrap();
+        // PyTorch magic: 0x80 (pickle protocol header)
+        let data = vec![0x80u8, 0x02, 0x00, 0x00]; // protocol 2 header
+        let path = dir.path().join("model.pt");
+        std::fs::write(&path, &data).unwrap();
+        
+        let config = StoreConfig { path: dir.path().to_path_buf(), ..Default::default() };
+        let store = Arc::new(StorageEngine::create_store(config).unwrap());
+        let pipeline = ConversionPipeline::new(store);
+        
+        let report = pipeline.import_pytorch(&path).unwrap();
+        assert_eq!(report.source_format, "pytorch");
     }
 }
