@@ -37,7 +37,7 @@ ciborium = "0.2"
 
 # Cryptography
 sha2 = "0.10"
-hmac = "0.12"
+hmac = "0.13"
 
 # Utilities
 uuid = { version = "1.6", features = ["v4"] }
