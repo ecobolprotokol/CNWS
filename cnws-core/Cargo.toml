@@ -36,7 +36,7 @@ rmp-serde = "1.1"
 ciborium = "0.2"
 
 # Cryptography
-sha2 = "0.10"
+sha2 = "0.11"
 hmac = "0.12"
 
 # Utilities
