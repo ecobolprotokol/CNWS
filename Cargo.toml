@@ -40,7 +40,7 @@ parking_lot = "0.12"
 dashmap = "5.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-prometheus = "0.13"
+prometheus = "0.14"
 axum = "0.7"
 clap = { version = "4.4", features = ["derive"] }
 safetensors = "0.4"
