@@ -55,7 +55,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 prometheus = { version = "0.13", features = ["process"] }
 opentelemetry = { version = "0.21", features = ["trace"] }
-opentelemetry-jaeger = { version = "0.20", optional = true }
+opentelemetry-jaeger = { version = "0.22", optional = true }
 
 # CLI
 clap = { version = "4.4", features = ["derive"] }
